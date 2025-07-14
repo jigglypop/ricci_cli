@@ -17,11 +17,6 @@ use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
 use rustyline::hint::{Hinter, HistoryHinter};
 use rustyline::validate::{Validator, MatchingBracketValidator};
 use rustyline::{Context as RustyContext, Helper};
-use rustyline::Cmd;
-use rustyline::EventHandler;
-use rustyline::KeyCode;
-use rustyline::KeyEvent;
-use rustyline::Modifiers;
 
 #[derive(Parser)]
 #[clap(name = "ricci")]
@@ -259,7 +254,11 @@ async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config) ->
 
     impl Highlighter for RicciHelper {
         fn highlight_prompt<'b, 's: 'b, 'p: 'b>(&'s self, prompt: &'p str, _default: bool) -> std::borrow::Cow<'b, str> {
-            std::borrow::Cow::Owned(prompt.to_string())
+            if prompt == "ricci (chat)> " {
+                std::borrow::Cow::Owned(format!("{} {}", "ricci".bright_blue().bold(), "(chat)>".yellow()))
+            } else {
+                std::borrow::Cow::Owned(prompt.bright_blue().bold().to_string())
+            }
         }
 
         fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
@@ -322,11 +321,11 @@ async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config) ->
 
     loop {
         let prompt = match mode {
-            AppMode::Command => format!("{}", "ricci> ".bright_blue().bold()),
-            AppMode::Chat => format!("{} {}", "ricci".bright_blue().bold(), "(chat)>".yellow()),
+            AppMode::Command => "ricci> ",
+            AppMode::Chat => "ricci (chat)> ",
         };
 
-        let readline = rl.readline(&prompt);
+        let readline = rl.readline(prompt);
         
         match readline {
             Ok(line) => {
