@@ -1,0 +1,14 @@
+2024-01-15T09:00:00Z [AUDIT] USER_LOGIN: user=kim.minho@nhbank.com ip=10.0.1.50 status=SUCCESS
+2024-01-15T09:15:23Z [AUDIT] DATA_ACCESS: user=kim.minho@nhbank.com table=customers action=SELECT rows=100
+2024-01-15T09:30:45Z [AUDIT] FAILED_LOGIN: user=unknown ip=192.168.1.100 attempts=3
+2024-01-15T09:31:00Z [AUDIT] FAILED_LOGIN: user=admin ip=192.168.1.100 attempts=5
+2024-01-15T09:45:12Z [AUDIT] PRIVILEGE_ESCALATION: user=park.jihoon@nhbank.com action=SUDO command="systemctl restart nginx"
+2024-01-15T10:00:33Z [AUDIT] DATA_EXPORT: user=lee.soojin@nhbank.com table=transactions rows=50000 format=CSV
+2024-01-15T10:15:45Z [AUDIT] SUSPICIOUS: Multiple login attempts from different IPs for user=admin
+2024-01-15T10:30:22Z [AUDIT] USER_LOGOUT: user=kim.minho@nhbank.com duration=90min
+2024-01-15T10:45:11Z [AUDIT] BULK_DOWNLOAD: user=contractor@external.com files=1500 size=2.3GB
+2024-01-15T11:00:00Z [AUDIT] ANOMALY: Unusual access pattern detected for user=test.account@nhbank.com
+2024-01-15T11:15:33Z [AUDIT] AUTH_FAILURE: API key authentication failed from ip=203.0.113.45
+2024-01-15T11:30:45Z [AUDIT] SUSPICIOUS: Port scanning detected from ip=192.168.1.200
+2024-01-15T11:45:22Z [AUDIT] DATA_ACCESS: user=admin@nhbank.com table=account_passwords action=SELECT
+2024-01-15T12:00:11Z [AUDIT] SYSTEM_CONFIG: user=root action=MODIFY file=/etc/security/limits.conf 

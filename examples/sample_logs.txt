@@ -1,0 +1,14 @@
+2024-01-15T10:30:45Z [INFO] Application started successfully
+2024-01-15T10:31:02Z [INFO] Database connection established
+2024-01-15T10:35:23Z [ERROR] Authentication failed for user: admin@nhbank.com
+2024-01-15T10:35:24Z [WARN] Multiple failed login attempts detected
+2024-01-15T10:36:45Z [ERROR] Out of memory error in payment processing module
+2024-01-15T10:36:46Z [CRITICAL] Payment service down - unable to process transactions
+2024-01-15T10:37:12Z [ERROR] Database connection timeout after 30 seconds
+2024-01-15T10:37:13Z [ERROR] Connection refused to database server
+2024-01-15T10:38:55Z [WARN] Slow query detected: SELECT * FROM transactions took 15 seconds
+2024-01-15T10:40:33Z [ERROR] Disk full on /var/log partition (99% usage)
+2024-01-15T10:41:22Z [INFO] Attempting automatic recovery
+2024-01-15T10:42:11Z [ERROR] Service unavailable: API gateway not responding
+2024-01-15T10:43:00Z [INFO] Recovery process completed
+2024-01-15T10:43:30Z [INFO] All services restored to normal operation 
