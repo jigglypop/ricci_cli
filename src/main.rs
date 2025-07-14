@@ -42,20 +42,16 @@ enum Commands {
         #[clap(short, long)]
         save: Option<String>,
     },
-    
     /// 작업계획서 생성
     Plan {
         /// 프로젝트 설명 또는 요구사항
         description: String,
-        
         /// 출력 형식 (markdown, json, yaml)
         #[clap(short, long, default_value = "markdown")]
         format: String,
-        
         /// 상세 레벨 (1-5)
         #[clap(short, long, default_value = "3")]
         detail: u8,
-        
         /// 일정 추정 포함
         #[clap(short, long)]
         estimate: bool,
