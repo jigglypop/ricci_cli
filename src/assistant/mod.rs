@@ -185,7 +185,7 @@ impl DevAssistant {
                 Ok(content) => {
                     if first_chunk {
                         // "Thinking..." 텍스트를 지우고 시작
-                        print!("\r{} ", "🤖 Ricci:".bright_green().bold());
+                        print!("\r{} ", "Ricci 봇:".bright_green().bold());
                         first_chunk = false;
                     }
                     

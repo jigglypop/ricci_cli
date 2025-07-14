@@ -456,7 +456,6 @@ async fn handle_special_command(command: &str, assistant: &mut DevAssistant) -> 
             }
         }
         "/mode" => {
-            use ricci_cli::assistant::ChatMode;
             let current_mode = assistant.get_chat_mode();
             println!("{}", "대화 모드 선택:".bright_blue());
             println!("  1. {} - 일반 대화", "Normal".cyan());
