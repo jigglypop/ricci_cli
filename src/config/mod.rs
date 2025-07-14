@@ -8,8 +8,17 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     pub anthropic_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
+    pub api_key_source: ApiKeySource,
     pub model_preferences: ModelPreferences,
     pub output_preferences: OutputPreferences,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeySource {
+    Environment,
+    ConfigFile,
+    RestApi { url: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,9 +43,16 @@ impl Default for Config {
             openai_api_key: None,
             anthropic_api_key: None,
             gemini_api_key: None,
+            api_key_source: ApiKeySource::Environment,
             model_preferences: ModelPreferences::default(),
             output_preferences: OutputPreferences::default(),
         }
+    }
+}
+
+impl Default for ApiKeySource {
+    fn default() -> Self {
+        ApiKeySource::Environment
     }
 }
 
@@ -69,34 +85,59 @@ impl Config {
     pub fn load() -> Result<Self> {
         let config_path = Self::config_path()?;
         
-        if config_path.exists() {
+        let mut config = if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)
                 .context("설정 파일 읽기 실패")?;
-            let mut config: Config = toml::from_str(&content)
-                .context("설정 파일 파싱 실패")?;
-            
-            // 환경 변수에서 API 키 오버라이드
-            if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-                config.openai_api_key = Some(key);
-            }
-            if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-                config.anthropic_api_key = Some(key);
-            }
-            if let Ok(key) = std::env::var("GEMINI_API_KEY") {
-                config.gemini_api_key = Some(key);
-            }
-            
-            Ok(config)
+            toml::from_str(&content)
+                .context("설정 파일 파싱 실패")?
         } else {
-            // 설정 파일이 없으면 기본값 + 환경 변수
-            let mut config = Config::default();
-            
-            config.openai_api_key = std::env::var("OPENAI_API_KEY").ok();
-            config.anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok();
-            config.gemini_api_key = std::env::var("GEMINI_API_KEY").ok();
-            
-            Ok(config)
+            Config::default()
+        };
+        
+        // API 키 로드 (우선순위: 환경변수 > 설정파일 > REST API)
+        config.load_api_keys().ok();
+        
+        Ok(config)
+    }
+    
+    fn load_api_keys(&mut self) -> Result<()> {
+        match &self.api_key_source {
+            ApiKeySource::Environment => {
+                // .env 파일이나 시스템 환경변수에서 로드
+                if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+                    self.openai_api_key = Some(key);
+                }
+                if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+                    self.anthropic_api_key = Some(key);
+                }
+                if let Ok(key) = std::env::var("GEMINI_API_KEY") {
+                    self.gemini_api_key = Some(key);
+                }
+            }
+            ApiKeySource::ConfigFile => {
+                // 이미 파일에서 로드됨
+            }
+            ApiKeySource::RestApi { url } => {
+                // REST API에서 키 가져오기
+                let url_clone = url.clone();
+                self.load_api_keys_from_rest(&url_clone)?;
+            }
         }
+        
+        Ok(())
+    }
+    
+    fn load_api_keys_from_rest(&mut self, url: &str) -> Result<()> {
+        // 나중에 구현할 REST API 호출 로직
+        // 예시:
+        // let response = reqwest::blocking::get(url)?;
+        // let keys: ApiKeys = response.json()?;
+        // self.openai_api_key = keys.openai;
+        // self.anthropic_api_key = keys.anthropic;
+        // self.gemini_api_key = keys.gemini;
+        
+        eprintln!("REST API 키 로드는 아직 구현되지 않았습니다: {}", url);
+        Ok(())
     }
     
     pub fn save(&self) -> Result<()> {
@@ -126,6 +167,15 @@ impl Config {
             _ => anyhow::bail!("지원하지 않는 제공자: {}", provider),
         }
         
+        // 설정 파일에 저장하고 소스를 ConfigFile로 변경
+        config.api_key_source = ApiKeySource::ConfigFile;
+        config.save()?;
+        Ok(())
+    }
+    
+    pub fn set_api_source(source: ApiKeySource) -> Result<()> {
+        let mut config = Self::load()?;
+        config.api_key_source = source;
         config.save()?;
         Ok(())
     }
@@ -146,19 +196,21 @@ impl Config {
         output.push_str(&format!("\n{}\n", "API 키:".cyan()));
         output.push_str(&format!("  OpenAI: {}\n", 
             self.openai_api_key.as_ref()
-                .map(|k| format!("{}...{}", &k[..6], &k[k.len()-4..]))
+                .map(|k| format!("{}...{}", &k[..6.min(k.len())], &k[k.len().saturating_sub(4)..]))
                 .unwrap_or_else(|| "설정되지 않음".red().to_string())
         ));
         output.push_str(&format!("  Anthropic: {}\n", 
             self.anthropic_api_key.as_ref()
-                .map(|k| format!("{}...{}", &k[..6], &k[k.len()-4..]))
+                .map(|k| format!("{}...{}", &k[..6.min(k.len())], &k[k.len().saturating_sub(4)..]))
                 .unwrap_or_else(|| "설정되지 않음".red().to_string())
         ));
         output.push_str(&format!("  Gemini: {}\n", 
             self.gemini_api_key.as_ref()
-                .map(|k| format!("{}...{}", &k[..6], &k[k.len()-4..]))
+                .map(|k| format!("{}...{}", &k[..6.min(k.len())], &k[k.len().saturating_sub(4)..]))
                 .unwrap_or_else(|| "설정되지 않음".red().to_string())
         ));
+        
+        output.push_str(&format!("\n  API 키 소스: {:?}\n", self.api_key_source));
         
         output.push_str(&format!("\n{}\n", "모델 설정:".cyan()));
         output.push_str(&format!("  기본 제공자: {}\n", self.model_preferences.default_provider));

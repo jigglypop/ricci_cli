@@ -5,13 +5,22 @@ use crate::renderer::MarkdownRenderer;
 use serde::{Serialize, Deserialize};
 use std::path::Path;
 use colored::*;
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 pub struct DevAssistant {
     client: OpenAIClient,
     renderer: MarkdownRenderer,
     context: AssistantContext,
     config: Config,
+    chat_mode: ChatMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChatMode {
+    Normal,     // 일반 대화
+    Concise,    // 간결한 응답
+    Detailed,   // 상세한 응답
+    Code,       // 코드 중심
+    Planning,   // 계획 수립 모드
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +96,57 @@ impl DevAssistant {
                 current_files: Vec::new(),
             },
             config,
+            chat_mode: ChatMode::Normal,
         })
+    }
+    
+    pub fn set_chat_mode(&mut self, mode: ChatMode) {
+        self.chat_mode = mode;
+    }
+    
+    pub fn get_chat_mode(&self) -> ChatMode {
+        self.chat_mode
+    }
+    
+    pub async fn summarize_conversation(&self) -> Result<String> {
+        if self.context.messages.is_empty() {
+            return Ok("대화 내용이 없습니다.".to_string());
+        }
+        
+        let conversation = self.context.messages.iter()
+            .map(|msg| format!("{}: {}", msg.role, msg.content))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        
+        let prompt = format!(
+            "다음 대화 내용을 요약하고 작업계획서로 정리해주세요:\n\n{}\n\n\
+            다음 형식으로 작성해주세요:\n\
+            1. 논의된 주요 작업\n\
+            2. 구현 우선순위\n\
+            3. 기술적 고려사항\n\
+            4. 예상 일정",
+            conversation
+        );
+        
+        self.client.query(&prompt).await
+    }
+    
+    pub async fn export_as_plan(&self, format: &str) -> Result<String> {
+        let summary = self.summarize_conversation().await?;
+        
+        match format {
+            "markdown" => Ok(format!("# 작업계획서\n\n{}", summary)),
+            "json" => {
+                let plan = serde_json::json!({
+                    "title": "대화 기반 작업계획서",
+                    "created_at": chrono::Utc::now().to_rfc3339(),
+                    "content": summary,
+                    "message_count": self.context.messages.len(),
+                });
+                Ok(serde_json::to_string_pretty(&plan)?)
+            }
+            _ => Ok(summary),
+        }
     }
     
     pub fn get_config(&self) -> &Config {
@@ -95,22 +154,41 @@ impl DevAssistant {
     }
     
     pub async fn stream_response(&mut self, query: &str) -> Result<()> {
+        use colored::*;
+        use std::io::Write;
+        
+        // 사용자 입력 표시
+        println!("\n{} {}", "나 :".bright_cyan().bold(), query.white());
+        println!("{}", "─".repeat(80).bright_black());
+        
         // 사용자 메시지 추가
         self.add_message("user", query);
         
         // 시스템 프롬프트 생성
         let system_prompt = self.create_system_prompt();
         
+        // AI 응답 시작 표시
+        println!("{} {}", "Ricci 봇:".bright_green().bold(), "Thinking...".dimmed());
+        print!("\r{} ", "Ricci: 봇".bright_green().bold());
+        std::io::stdout().flush()?;
+        
         // 스트리밍 응답 받기
         let mut stream = self.client.stream_chat(&system_prompt, &self.context.messages).await?;
         
         let mut response = String::new();
         let mut buffer = String::new();
+        let mut first_chunk = true;
         
         // 스트리밍 출력
         while let Some(chunk) = stream.recv().await {
             match chunk {
                 Ok(content) => {
+                    if first_chunk {
+                        // "Thinking..." 텍스트를 지우고 시작
+                        print!("\r{} ", "🤖 Ricci:".bright_green().bold());
+                        first_chunk = false;
+                    }
+                    
                     buffer.push_str(&content);
                     response.push_str(&content);
                     
@@ -121,7 +199,7 @@ impl DevAssistant {
                     }
                 }
                 Err(e) => {
-                    eprintln!("스트리밍 오류: {}", e);
+                    eprintln!("\n스트리밍 오류: {}", e);
                     break;
                 }
             }
@@ -131,6 +209,9 @@ impl DevAssistant {
         if !buffer.is_empty() {
             self.renderer.render_chunk(&buffer)?;
         }
+        
+        // 응답 끝 구분선
+        println!("\n{}", "─".repeat(80).bright_black());
         
         // 어시스턴트 응답 저장
         self.add_message("assistant", &response);
@@ -352,14 +433,50 @@ impl DevAssistant {
             prompt.push_str("\n");
         }
         
-        prompt.push_str(
-            "응답 시 다음 가이드라인을 따라주세요:\n\
-            1. 명확하고 실용적인 조언 제공\n\
-            2. 코드 예제는 실행 가능한 형태로 제공\n\
-            3. 모범 사례와 패턴 제안\n\
-            4. 잠재적 문제점 지적\n\
-            5. 한국어로 친절하게 설명"
-        );
+        // 대화 모드에 따른 가이드라인 설정
+        let guidelines = match self.chat_mode {
+            ChatMode::Normal => {
+                "응답 시 다음 가이드라인을 따라주세요:\n\
+                1. 짧고 간결하게 답변 (3-5문장 이내 선호)\n\
+                2. 꼭 필요한 경우에만 코드 예제 제공\n\
+                3. 장황한 설명 대신 핵심만 전달\n\
+                4. 사용자가 추가 정보를 요청하면 상세히 설명\n\
+                5. 한국어로 친절하게 설명"
+            }
+            ChatMode::Concise => {
+                "응답 시 다음 가이드라인을 따라주세요:\n\
+                1. 매우 간결하게 답변 (1-2문장)\n\
+                2. 핵심만 전달\n\
+                3. 코드는 최소한으로\n\
+                4. 한국어로 답변"
+            }
+            ChatMode::Detailed => {
+                "응답 시 다음 가이드라인을 따라주세요:\n\
+                1. 상세하고 체계적으로 설명\n\
+                2. 단계별로 구분하여 설명\n\
+                3. 예제 코드와 함께 설명\n\
+                4. 모범 사례와 주의사항 포함\n\
+                5. 한국어로 친절하게 설명"
+            }
+            ChatMode::Code => {
+                "응답 시 다음 가이드라인을 따라주세요:\n\
+                1. 코드 중심으로 답변\n\
+                2. 실행 가능한 완전한 코드 제공\n\
+                3. 주석으로 간단히 설명\n\
+                4. 코드 품질과 최적화 중시\n\
+                5. 한국어 주석 사용"
+            }
+            ChatMode::Planning => {
+                "응답 시 다음 가이드라인을 따라주세요:\n\
+                1. 체계적인 계획 수립\n\
+                2. 단계별 작업 분해\n\
+                3. 우선순위와 의존관계 명시\n\
+                4. 예상 소요시간 포함\n\
+                5. 한국어로 명확하게 작성"
+            }
+        };
+        
+        prompt.push_str(guidelines);
         
         prompt
     }

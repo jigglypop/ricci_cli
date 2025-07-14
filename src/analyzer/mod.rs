@@ -1,4 +1,4 @@
-use anyhow::{Result, Context};
+use anyhow::Result;
 use serde::{Serialize, Deserialize};
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
@@ -8,6 +8,7 @@ use crate::api::OpenAIClient;
 use walkdir::WalkDir;
 
 pub struct CodeAnalyzer {
+    #[allow(dead_code)]
     client: OpenAIClient,
 }
 

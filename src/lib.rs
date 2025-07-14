@@ -4,8 +4,7 @@ pub mod planner;
 pub mod analyzer;
 pub mod config;
 pub mod renderer;
-
-use anyhow::Result;
+pub mod splash;
 
 // Re-export commonly used types
 pub use assistant::DevAssistant;

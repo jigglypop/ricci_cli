@@ -47,12 +47,36 @@ cargo build --release
 
 ### 환경 설정
 
+#### 방법 1: .env 파일 사용 (권장)
+
+```bash
+# env.example을 복사해서 .env 파일 생성
+cp env.example .env
+
+# .env 파일 편집
+# OPENAI_API_KEY=sk-your-actual-api-key-here
+```
+
+#### 방법 2: 환경 변수 설정
+
 ```bash
 # 환경 변수 설정
 export OPENAI_API_KEY="your-api-key"
+```
 
-# 또는 설정 명령어 사용
+#### 방법 3: 설정 명령어 사용
+
+```bash
+# 설정 명령어로 API 키 저장
 ricci config set-key openai "your-api-key"
+```
+
+#### 방법 4: REST API에서 가져오기 (준비 중)
+
+```bash
+# config.toml에서 설정
+[api_key_source]
+rest_api = { url = "https://your-api-server.com/api/keys" }
 ```
 
 ## 사용법

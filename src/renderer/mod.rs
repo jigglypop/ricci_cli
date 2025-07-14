@@ -6,6 +6,7 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
 use termimad::*;
 use termimad::crossterm::style::Color as CrosstermColor;
+use std::io::Write;
 
 pub struct MarkdownRenderer {
     syntax_set: SyntaxSet,
@@ -39,8 +40,9 @@ impl MarkdownRenderer {
         if text.contains("```") {
             self.render_with_code_blocks(text)?;
         } else {
-            // 일반 텍스트는 그대로 출력
+            // 일반 텍스트는 그대로 출력 (색상 없이)
             print!("{}", text);
+            std::io::stdout().flush()?;
         }
         Ok(())
     }

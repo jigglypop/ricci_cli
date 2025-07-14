@@ -1,14 +1,27 @@
 use clap::{Parser, Subcommand, CommandFactory};
 use clap_complete::{generate, Generator, Shell};
 use colored::*;
-use anyhow::Result;
+use anyhow::{Result, Context};
 use std::io::{self, Write};
 use ricci_cli::{
     assistant::DevAssistant,
     planner::ProjectPlanner,
     analyzer::CodeAnalyzer,
     config::Config,
+    splash::{display_splash},
 };
+use rustyline::error::ReadlineError;
+use rustyline::{Editor, CompletionType, Config as RustyConfig, EditMode};
+use rustyline::completion::{Completer, FilenameCompleter, Pair};
+use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
+use rustyline::hint::{Hinter, HistoryHinter};
+use rustyline::validate::{Validator, MatchingBracketValidator};
+use rustyline::{Context as RustyContext, Helper};
+use rustyline::Cmd;
+use rustyline::EventHandler;
+use rustyline::KeyCode;
+use rustyline::KeyEvent;
+use rustyline::Modifiers;
 
 #[derive(Parser)]
 #[clap(name = "ricci")]
@@ -96,6 +109,13 @@ enum Commands {
         #[clap(value_enum)]
         shell: Shell,
     },
+    
+    /// 자동완성 설치
+    Install {
+        /// 대상 쉘 (자동 감지하려면 비워두세요)
+        #[clap(value_enum)]
+        shell: Option<Shell>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -113,8 +133,17 @@ enum ConfigAction {
     Reset,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum AppMode {
+    Command,
+    Chat,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // .env 파일 로드
+    dotenv::dotenv().ok();
+    
     let cli = Cli::parse();
     
     // 설정 로드
@@ -142,6 +171,9 @@ async fn main() -> Result<()> {
         Some(Commands::Completion { shell }) => {
             print_completions(shell, &mut Cli::command());
         }
+        Some(Commands::Install { shell }) => {
+            install_completions(shell)?;
+        }
         None => {
             // 직접 질문 모드
             if let Some(query) = cli.query {
@@ -161,23 +193,15 @@ fn print_completions<G: Generator>(gen: G, cmd: &mut clap::Command) {
 }
 
 async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config) -> Result<()> {
-    use rustyline::error::ReadlineError;
-    use rustyline::{Editor, CompletionType, Config as RustyConfig, EditMode};
-    use rustyline::completion::{Completer, FilenameCompleter, Pair};
-    use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
-    use rustyline::hint::{Hinter, HistoryHinter};
-    use rustyline::validate::{Validator, MatchingBracketValidator};
-    use rustyline::{Context as RustyContext, Helper};
-    
     // 자동완성 헬퍼 구조체
     struct RicciHelper {
         completer: FilenameCompleter,
         highlighter: MatchingBracketHighlighter,
         validator: MatchingBracketValidator,
-        hinter: HistoryHinter,
+        hinter: HistoryHinter, // 표준 히스토리 힌터 사용
         commands: Vec<String>,
     }
-    
+
     impl RicciHelper {
         fn new() -> Self {
             Self {
@@ -186,111 +210,94 @@ async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config) ->
                 validator: MatchingBracketValidator::new(),
                 hinter: HistoryHinter {},
                 commands: vec![
-                    "/clear".to_string(),
-                    "/context".to_string(),
-                    "/save".to_string(),
-                    "/help".to_string(),
-                    "/plan".to_string(),
-                    "/analyze".to_string(),
-                    "/review".to_string(),
-                    "/doc".to_string(),
-                ],
+                    "/clear", "/context", "/save", "/help", "/plan", 
+                    "/analyze", "/review", "/doc", "/new", "/cls", 
+                    "/mode", "/summary", "/export", "/chat",
+                ].into_iter().map(String::from).collect(),
             }
         }
     }
-    
+
     impl Completer for RicciHelper {
         type Candidate = Pair;
-        
-        fn complete(
-            &self,
-            line: &str,
-            pos: usize,
-            ctx: &RustyContext<'_>,
-        ) -> rustyline::Result<(usize, Vec<Pair>)> {
-            // 특수 명령어 자동완성
+
+        fn complete( &self, line: &str, pos: usize, ctx: &RustyContext<'_>) -> rustyline::Result<(usize, Vec<Pair>)> {
             if line.starts_with('/') {
-                let mut candidates = Vec::new();
-                let prefix = &line[..pos];
-                
+                let mut matches = Vec::new();
                 for cmd in &self.commands {
-                    if cmd.starts_with(prefix) {
-                        candidates.push(Pair {
+                    if cmd.starts_with(line) {
+                        matches.push(Pair {
                             display: cmd.clone(),
                             replacement: cmd.clone(),
                         });
                     }
                 }
-                
-                if !candidates.is_empty() {
-                    return Ok((0, candidates));
-                }
+                return Ok((0, matches));
             }
-            
-            // 파일명 자동완성
             self.completer.complete(line, pos, ctx)
         }
     }
-    
+
     impl Hinter for RicciHelper {
         type Hint = String;
-        
         fn hint(&self, line: &str, pos: usize, ctx: &RustyContext<'_>) -> Option<String> {
+            if pos < line.len() { return None; }
+
+            // 명령어 힌트
+            if line.starts_with('/') {
+                for cmd in &self.commands {
+                    if cmd.starts_with(line) && cmd.len() > line.len() {
+                        return Some(cmd[pos..].to_string());
+                    }
+                }
+            }
+            
+            // 그 외에는 히스토리 기반 힌트
             self.hinter.hint(line, pos, ctx)
         }
     }
-    
+
     impl Highlighter for RicciHelper {
-        fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
-            &'s self,
-            prompt: &'p str,
-            default: bool,
-        ) -> std::borrow::Cow<'b, str> {
-            if default {
-                std::borrow::Cow::Borrowed(prompt)
-            } else {
-                std::borrow::Cow::Owned(prompt.bright_green().bold().to_string())
-            }
+        fn highlight_prompt<'b, 's: 'b, 'p: 'b>(&'s self, prompt: &'p str, _default: bool) -> std::borrow::Cow<'b, str> {
+            std::borrow::Cow::Owned(prompt.to_string())
         }
-        
+
         fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
             std::borrow::Cow::Owned(hint.dimmed().to_string())
         }
-        
+
         fn highlight<'l>(&self, line: &'l str, pos: usize) -> std::borrow::Cow<'l, str> {
             self.highlighter.highlight(line, pos)
         }
-        
-        fn highlight_char(&self, line: &str, pos: usize) -> bool {
-            self.highlighter.highlight_char(line, pos)
+
+        fn highlight_char(&self, line: &str, pos: usize, forced: bool) -> bool {
+            self.highlighter.highlight_char(line, pos, forced)
         }
     }
-    
+
     impl Validator for RicciHelper {
-        fn validate(
-            &self,
-            ctx: &mut rustyline::validate::ValidationContext,
-        ) -> rustyline::Result<rustyline::validate::ValidationResult> {
+        fn validate( &self, ctx: &mut rustyline::validate::ValidationContext, ) -> rustyline::Result<rustyline::validate::ValidationResult> {
             self.validator.validate(ctx)
         }
-        
         fn validate_while_typing(&self) -> bool {
             self.validator.validate_while_typing()
         }
     }
-    
+
     impl Helper for RicciHelper {}
-    
+
     // Rustyline 설정
     let rusty_config = RustyConfig::builder()
         .history_ignore_space(true)
         .completion_type(CompletionType::List)
         .edit_mode(EditMode::Emacs)
         .build();
-    
+
     let helper = RicciHelper::new();
     let mut rl = Editor::with_config(rusty_config)?;
     rl.set_helper(Some(helper));
+    // NOTE: 모든 커스텀 키 바인딩 제거하여 rustyline 기본값 사용
+    // 기본적으로 Tab=완성 목록, RightArrow=힌트 완성을 지원함
     
     // 히스토리 파일 로드
     let history_path = dirs::data_dir()
@@ -300,9 +307,8 @@ async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config) ->
         let _ = rl.load_history(path);
     }
     
-    println!("{}", "Ricci 개발 어시스턴트".bright_cyan().bold());
-    println!("{}", "대화형 모드로 진입합니다. 'exit' 또는 Ctrl+C로 종료하세요.\n".dimmed());
-    println!("{}", "💡 Tab 키로 자동완성을 사용할 수 있습니다.\n".yellow());
+    // Splash 화면 표시
+    display_splash()?;
     
     let mut assistant = DevAssistant::new(config.clone())?;
     
@@ -312,33 +318,59 @@ async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config) ->
         println!("{}", "✓ 프로젝트 컨텍스트 로드 완료\n".green());
     }
     
+    let mut mode = AppMode::Command;
+
     loop {
-        let readline = rl.readline(&format!("{} ", ">".bright_green().bold()));
+        let prompt = match mode {
+            AppMode::Command => format!("{}", "ricci> ".bright_blue().bold()),
+            AppMode::Chat => format!("{} {}", "ricci".bright_blue().bold(), "(chat)>".yellow()),
+        };
+
+        let readline = rl.readline(&prompt);
         
         match readline {
             Ok(line) => {
                 rl.add_history_entry(line.as_str())?;
-                
                 let input = line.trim();
                 if input.is_empty() {
                     continue;
                 }
-                
-                if input == "exit" || input == "quit" {
-                    println!("{}", "\n대화를 종료합니다.".dimmed());
-                    break;
+
+                match mode {
+                    AppMode::Command => {
+                        if input == "chat" || input == "/chat" {
+                            mode = AppMode::Chat;
+                            println!("{}", "대화 모드로 전환합니다. 'exit'로 종료할 수 있습니다.".green());
+                            continue;
+                        }
+                        if input.starts_with('/') {
+                            handle_special_command(input, &mut assistant).await?;
+                            continue;
+                        }
+                        
+                        // Execute as shell command
+                        println!("{} {}", "❯ Executing:".dimmed(), input);
+                        let output = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" })
+                            .arg(if cfg!(windows) { "/C" } else { "-c" })
+                            .arg(input)
+                            .output()?;
+
+                        if !output.stdout.is_empty() {
+                            print!("{}", String::from_utf8_lossy(&output.stdout));
+                        }
+                        if !output.stderr.is_empty() {
+                            eprint!("{}", String::from_utf8_lossy(&output.stderr).red());
+                        }
+                    }
+                    AppMode::Chat => {
+                        if input == "exit" || input == "quit" {
+                            mode = AppMode::Command;
+                            println!("{}", "명령어 모드로 돌아갑니다.".yellow());
+                            continue;
+                        }
+                        assistant.stream_response(input).await?;
+                    }
                 }
-                
-                // 특수 명령어 처리
-                if input.starts_with('/') {
-                    handle_special_command(input, &mut assistant).await?;
-                    continue;
-                }
-                
-                // AI 응답 스트리밍
-                println!();
-                assistant.stream_response(input).await?;
-                println!("\n");
             }
             Err(ReadlineError::Interrupted) => {
                 println!("{}", "\n대화가 중단되었습니다.".yellow());
@@ -377,6 +409,16 @@ async fn handle_special_command(command: &str, assistant: &mut DevAssistant) -> 
             assistant.clear_context();
             println!("{}", "컨텍스트가 초기화되었습니다.".yellow());
         }
+        "/cls" | "/new" => {
+            // 화면 초기화
+            print!("\x1B[2J\x1B[1;1H");
+            std::io::stdout().flush()?;
+            ricci_cli::splash::display_mini_splash();
+            if command == "/new" {
+                assistant.clear_context();
+                println!("{}", "새 대화를 시작합니다.".green());
+            }
+        }
         "/context" => {
             let context = assistant.get_context_summary();
             println!("{}\n{}", "현재 컨텍스트:".bright_blue(), context);
@@ -414,6 +456,48 @@ async fn handle_special_command(command: &str, assistant: &mut DevAssistant) -> 
                 println!("\n{}", doc);
             }
         }
+        "/mode" => {
+            use ricci_cli::assistant::ChatMode;
+            let current_mode = assistant.get_chat_mode();
+            println!("{}", "대화 모드 선택:".bright_blue());
+            println!("  1. {} - 일반 대화", "Normal".cyan());
+            println!("  2. {} - 간결한 응답", "Concise".cyan());
+            println!("  3. {} - 상세한 응답", "Detailed".cyan());
+            println!("  4. {} - 코드 중심", "Code".cyan());
+            println!("  5. {} - 계획 수립", "Planning".cyan());
+            println!("\n현재 모드: {:?}", current_mode);
+            println!("모드를 변경하려면 /mode <1-5> 를 입력하세요.");
+        }
+        cmd if cmd.starts_with("/mode ") => {
+            use ricci_cli::assistant::ChatMode;
+            let mode_str = cmd.trim_start_matches("/mode ").trim();
+            let mode = match mode_str {
+                "1" => ChatMode::Normal,
+                "2" => ChatMode::Concise,
+                "3" => ChatMode::Detailed,
+                "4" => ChatMode::Code,
+                "5" => ChatMode::Planning,
+                _ => {
+                    println!("{}", "올바른 모드 번호를 입력하세요 (1-5)".red());
+                    return Ok(());
+                }
+            };
+            assistant.set_chat_mode(mode);
+            println!("{} 모드가 {:?}로 변경되었습니다.", "✓".green(), mode);
+        }
+        "/summary" => {
+            println!("{}", "대화 내용을 요약하는 중...".yellow());
+            let summary = assistant.summarize_conversation().await?;
+            println!("\n{}", "📋 대화 요약:".bright_blue().bold());
+            println!("{}", summary);
+        }
+        "/export" => {
+            println!("{}", "작업계획서로 내보내는 중...".yellow());
+            let plan = assistant.export_as_plan("markdown").await?;
+            let filename = format!("plan_{}.md", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+            std::fs::write(&filename, &plan)?;
+            println!("{} 작업계획서가 {}에 저장되었습니다.", "✓".green(), filename.cyan());
+        }
         _ => {
             println!("{}", "알 수 없는 명령어입니다. /help를 입력하세요.".red());
         }
@@ -423,14 +507,24 @@ async fn handle_special_command(command: &str, assistant: &mut DevAssistant) -> 
 
 fn print_special_commands() {
     println!("{}", "\n특수 명령어:".bright_blue().bold());
-    println!("  {} - 컨텍스트 초기화", "/clear".cyan());
+    println!("  {} - 화면 지우기", "/cls".cyan());
+    println!("  {} - 새 대화 시작 (화면 지우기 + 컨텍스트 초기화)", "/new".cyan());
+    println!("  {} - 컨텍스트만 초기화", "/clear".cyan());
     println!("  {} - 현재 컨텍스트 보기", "/context".cyan());
     println!("  {} - 세션 저장", "/save".cyan());
+    println!("  {} [1-5] - 대화 모드 변경", "/mode".cyan());
+    println!("  {} - 대화 내용 요약", "/summary".cyan());
+    println!("  {} - 작업계획서로 내보내기", "/export".cyan());
     println!("  {} - 작업계획서 템플릿", "/plan".cyan());
     println!("  {} - 프로젝트 분석", "/analyze".cyan());
     println!("  {} <path> - 코드 리뷰", "/review".cyan());
     println!("  {} <target> [type] - 문서 생성", "/doc".cyan());
     println!("  {} - 도움말\n", "/help".cyan());
+    
+    println!("{}", "자동완성:".bright_green().bold());
+    println!("  {} - 명령어, 파일명 자동완성", "Tab".bright_yellow());
+    println!("  {} + {} - 히스토리 검색", "Ctrl".bright_yellow(), "R".bright_yellow());
+    println!("  {} + {} - 줄 지우기\n", "Ctrl".bright_yellow(), "U".bright_yellow());
 }
 
 fn get_plan_templates() -> String {
@@ -558,8 +652,171 @@ fn handle_config(action: ConfigAction) -> Result<()> {
 }
 
 async fn handle_direct_query(query: &str, config: &Config) -> Result<()> {
-    let assistant = DevAssistant::new(config.clone())?;
+    let mut assistant = DevAssistant::new(config.clone())?;
     assistant.stream_response(query).await?;
     println!();
+    Ok(())
+}
+
+fn install_completions(shell: Option<Shell>) -> Result<()> {
+    // 쉘 자동 감지
+    let detected_shell = if let Some(shell) = shell {
+        shell
+    } else {
+        detect_shell()?
+    };
+    
+    println!("{} {}", 
+        "자동완성 설치 중:".bright_green(), 
+        format!("{:?}", detected_shell).cyan()
+    );
+    
+    // 완성 스크립트 생성
+    let mut cmd = Cli::command();
+    let mut script = Vec::new();
+    generate(detected_shell, &mut cmd, "ricci", &mut script);
+    let script_content = String::from_utf8(script)?;
+    
+    // 설치 경로 결정
+    match detected_shell {
+        Shell::Bash => install_bash_completion(&script_content)?,
+        Shell::Zsh => install_zsh_completion(&script_content)?,
+        Shell::PowerShell => install_powershell_completion(&script_content)?,
+        Shell::Fish => install_fish_completion(&script_content)?,
+        _ => anyhow::bail!("지원하지 않는 쉘입니다: {:?}", detected_shell),
+    }
+    
+    println!("{}", "✓ 자동완성 설치 완료!".green().bold());
+    println!("\n다음 중 하나를 실행하여 적용하세요:");
+    
+    match detected_shell {
+        Shell::Bash => println!("  source ~/.bashrc"),
+        Shell::Zsh => println!("  source ~/.zshrc"),
+        Shell::PowerShell => println!("  . $PROFILE"),
+        Shell::Fish => println!("  source ~/.config/fish/config.fish"),
+        _ => {}
+    }
+    
+    println!("\n{}", "사용 예시:".yellow());
+    println!("  ricci <Tab>        # 사용 가능한 명력어 보기");
+    println!("  ricci plan <Tab>   # plan 옵션 보기");
+    
+    Ok(())
+}
+
+fn detect_shell() -> Result<Shell> {
+    // Windows
+    if cfg!(windows) {
+        return Ok(Shell::PowerShell);
+    }
+    
+    // Unix-like systems
+    if let Ok(shell) = std::env::var("SHELL") {
+        if shell.contains("bash") {
+            return Ok(Shell::Bash);
+        } else if shell.contains("zsh") {
+            return Ok(Shell::Zsh);
+        } else if shell.contains("fish") {
+            return Ok(Shell::Fish);
+        }
+    }
+    
+    // 기본값
+    Ok(Shell::Bash)
+}
+
+fn install_bash_completion(script: &str) -> Result<()> {
+    let home = dirs::home_dir().context("홈 디렉토리를 찾을 수 없습니다")?;
+    let completion_dir = home.join(".local").join("share").join("bash-completion").join("completions");
+    std::fs::create_dir_all(&completion_dir)?;
+    
+    let completion_file = completion_dir.join("ricci");
+    std::fs::write(&completion_file, script)?;
+    
+    // .bashrc에 추가
+    let bashrc = home.join(".bashrc");
+    if bashrc.exists() {
+        let content = std::fs::read_to_string(&bashrc)?;
+        if !content.contains("bash-completion/completions") {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&bashrc)?;
+            writeln!(file, "\n# Ricci CLI 자동완성")?;
+            writeln!(file, "[ -f ~/.local/share/bash-completion/completions/ricci ] && source ~/.local/share/bash-completion/completions/ricci")?;
+        }
+    }
+    
+    Ok(())
+}
+
+fn install_zsh_completion(script: &str) -> Result<()> {
+    let home = dirs::home_dir().context("홈 디렉토리를 찾을 수 없습니다")?;
+    let completion_dir = home.join(".local").join("share").join("zsh").join("completions");
+    std::fs::create_dir_all(&completion_dir)?;
+    
+    let completion_file = completion_dir.join("_ricci");
+    std::fs::write(&completion_file, script)?;
+    
+    // .zshrc에 fpath 추가
+    let zshrc = home.join(".zshrc");
+    if zshrc.exists() {
+        let content = std::fs::read_to_string(&zshrc)?;
+        if !content.contains(".local/share/zsh/completions") {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&zshrc)?;
+            writeln!(file, "\n# Ricci CLI 자동완성")?;
+            writeln!(file, "fpath=(~/.local/share/zsh/completions $fpath)")?;
+            writeln!(file, "autoload -Uz compinit && compinit")?;
+        }
+    }
+    
+    Ok(())
+}
+
+fn install_powershell_completion(script: &str) -> Result<()> {
+    let config_dir = dirs::config_dir()
+        .context("설정 디렉토리를 찾을 수 없습니다")?
+        .join("ricci");
+    std::fs::create_dir_all(&config_dir)?;
+    
+    let completion_file = config_dir.join("ricci-completion.ps1");
+    std::fs::write(&completion_file, script)?;
+    
+    // PowerShell 프로필에 추가
+    if let Ok(profile) = std::env::var("PROFILE") {
+        let profile_path = std::path::Path::new(&profile);
+        if let Some(parent) = profile_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        
+        if profile_path.exists() {
+            let content = std::fs::read_to_string(&profile_path)?;
+            let import_line = format!(". \"{}\"", completion_file.display());
+            
+            if !content.contains(&import_line) {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&profile_path)?;
+                writeln!(file, "\n# Ricci CLI 자동완성")?;
+                writeln!(file, "{}", import_line)?;
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+fn install_fish_completion(script: &str) -> Result<()> {
+    let config_dir = dirs::config_dir()
+        .context("설정 디렉토리를 찾을 수 없습니다")?
+        .join("fish")
+        .join("completions");
+    std::fs::create_dir_all(&config_dir)?;
+    
+    let completion_file = config_dir.join("ricci.fish");
+    std::fs::write(&completion_file, script)?;
+    
     Ok(())
 }

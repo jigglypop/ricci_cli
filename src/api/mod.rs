@@ -1,8 +1,7 @@
 use async_openai::{
     config::OpenAIConfig,
     types::{ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs, 
-            ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
-            ChatCompletionStreamResponseDelta},
+            ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs},
     Client,
 };
 use anyhow::{Context, Result};
