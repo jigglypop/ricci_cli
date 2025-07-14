@@ -1,272 +1,161 @@
 # Ricci CLI
+> AI CLI by IT신기술융합팀
 
-> AI 기반 개발 어시스턴트 - Gemini CLI 스타일의 대화형 개발 도구
+Ricci CLI는 셸 명령어 실행과 AI와의 대화를 하나의 인터페이스에서 결합한 차세대 개발 어시스턴트입니다.
+일상적인 개발 작업을 방해하지 않으면서, 필요할 때 언제든 강력한 AI의 지원을 받을 수 있도록 설계되었습니다.
 
-## 개요
+![Ricci CLI Demo](https://user-images.githubusercontent.com/12345/67890.gif) 
+*(실제 데모 GIF를 여기에 추가하세요)*
 
-Ricci CLI는 개발자를 위한 AI 어시스턴트입니다. 대화형 인터페이스를 통해 코드 리뷰, 작업계획서 생성, 프로젝트 분석, 문서 작성 등을 지원합니다.
+---
 
-## 주요 기능
+## ✨ 핵심 기능
 
-### 🤖 대화형 AI 어시스턴트
-- **스트리밍 응답**: 실시간으로 AI 응답을 확인
-- **컨텍스트 인식**: 프로젝트 구조와 파일을 이해하고 맞춤형 조언 제공
-- **마크다운 렌더링**: 코드 블록 구문 강조와 깔끔한 포맷팅
+- **듀얼 모드 인터페이스**:
+  - **명령어 모드 (기본)**: `ls`, `git`, `cargo` 등 기존 셸 명령어를 그대로 사용합니다.
+  - **대화 모드**: `c` 키 하나로 AI 어시스턴트와 대화하는 모드로 즉시 전환합니다.
+- **실시간 명령어 스트리밍**: `cargo build`처럼 오래 걸리는 명령어의 출력을 실시간으로 확인할 수 있습니다.
+- **AI 기반 작업 계획 수립**:
+  - 대화 내용을 기반으로 작업 계획을 요약하고, `plan_YYYYMMDD_HHMMSS.md` 파일로 자동 저장합니다 (`p` 단축키).
+- **지능형 자동완성**:
+  - `/`로 시작하는 특수 명령어에 대한 **힌트**를 회색으로 표시합니다.
+  - `Tab` 또는 `→` 키로 **힌트를 완성**합니다.
+  - `Ctrl+I`로 **전체 명령어 목록**을 확인합니다.
+- **다양한 AI 기능**: 코드 리뷰, 문서 생성, 프로젝트 분석 등 복잡한 작업을 AI에게 위임할 수 있습니다.
 
-### 📋 작업계획서 생성
-- **자동 태스크 분해**: 프로젝트 설명을 기반으로 상세한 작업 계획 생성
-- **일정 추정**: 각 단계별 예상 소요 시간 계산
-- **위험 관리**: 잠재적 위험 요소와 대응 방안 제시
-- **다양한 출력 형식**: Markdown, JSON, YAML 지원
+---
 
-### 🔍 프로젝트 분석
-- **구조 분석**: 파일 구성, 언어별 통계, 디렉토리 구조 파악
-- **의존성 분석**: 사용 중인 라이브러리와 버전 확인
-- **복잡도 분석**: 코드 복잡도 측정 및 개선점 제안
-- **코드 스멜 탐지**: 리팩토링이 필요한 부분 식별
-
-### 📝 코드 리뷰 & 문서화
-- **자동 코드 리뷰**: 보안, 성능, 스타일 기준으로 코드 평가
-- **문서 자동 생성**: API 문서, README, 아키텍처 문서 생성
-- **모범 사례 제안**: 코드 품질 향상을 위한 구체적인 조언
-
-## 설치
+## 🚀 설치 및 설정
 
 ### 사전 요구사항
+- Rust (최신 안정 버전 권장)
+- OpenAI, Anthropic, Gemini 등 LLM 서비스의 API 키
 
-- Rust 1.70 이상
-- OpenAI API 키 (또는 Anthropic/Gemini API 키)
+### 설치
+1. 저장소를 클론합니다:
+   ```sh
+   git clone <repository-url>
+   cd ricci-cli
+   ```
+2. 프로젝트를 빌드 및 설치합니다:
+   ```sh
+   cargo install --path .
+   ```
+3. API 키를 설정합니다. `.env` 파일을 생성하고 다음 내용을 추가하는 것을 권장합니다:
+   ```env
+   # .env
+   OPENAI_API_KEY="sk-..."
+   ```
+   또는, `ricci config set-key` 명령어를 사용할 수도 있습니다.
 
-### 빌드
+---
 
-```bash
-git clone https://github.com/yourusername/ricci-cli
-cd ricci-cli
-cargo build --release
-```
+## 📖 사용법
 
-### 환경 설정
+### 시작하기
+터미널에서 `ricci`를 실행합니다.
 
-#### 방법 1: .env 파일 사용 (권장)
-
-```bash
-# env.example을 복사해서 .env 파일 생성
-cp env.example .env
-
-# .env 파일 편집
-# OPENAI_API_KEY=sk-your-actual-api-key-here
-```
-
-#### 방법 2: 환경 변수 설정
-
-```bash
-# 환경 변수 설정
-export OPENAI_API_KEY="your-api-key"
-```
-
-#### 방법 3: 설정 명령어 사용
-
-```bash
-# 설정 명령어로 API 키 저장
-ricci config set-key openai "your-api-key"
-```
-
-#### 방법 4: REST API에서 가져오기 (준비 중)
-
-```bash
-# config.toml에서 설정
-[api_key_source]
-rest_api = { url = "https://your-api-server.com/api/keys" }
-```
-
-## 사용법
-
-### 기본 대화형 모드
-
-```bash
-# 대화형 모드 시작
+```sh
 ricci
-
-# 프로젝트 컨텍스트와 함께 시작
-ricci chat --context
-
-# 세션 저장
-ricci chat --save session.json
 ```
 
-### 직접 질문
+### 1. 명령어 모드 (기본)
+`ricci>` 프롬프트가 표시됩니다. 이 모드에서는 일반적인 셸 명령어처럼 사용할 수 있습니다.
 
-```bash
-# 단일 질문
-ricci "이 프로젝트의 구조를 설명해줘"
+- **셸 명령어 실행**:
+  ```sh
+  ricci> ls -la
+  ricci> git status
+  ricci> cargo build --release
+  ```
+- **주요 단축키**:
+  - `c` 또는 `chat`: **대화 모드**로 전환합니다.
+  - `h` 또는 `/help`: **도움말**을 표시합니다.
+  - `p` 또는 `/summary`: 현재 대화 내용으로 **작업 계획서를 생성하고 저장**합니다.
+
+### 2. 대화 모드
+명령어 모드에서 `c`를 입력하면 `ricci (chat)>` 프롬프트로 전환됩니다.
+
+- **AI에게 질문하기**:
+  ```sh
+  ricci (chat)> React에서 상태 관리를 위한 최고의 방법은 뭐야?
+  ```
+- **명령어 모드로 돌아가기**:
+  ```sh
+  ricci (chat)> exit
+  ```
+
+### 자동완성
+- `Tab` 또는 `→`: 회색으로 표시된 명령어 **힌트를 완성**합니다.
+- `Ctrl+I`: 자동완성 가능한 **명령어 목록**을 봅니다.
+
+### 특수 명령어 ( 명령어 모드에서 `/`로 시작 )
+
+- `/new`, `/clear`: 새 대화 시작 (컨텍스트 초기화)
+- `/cls`: 화면 지우기
+- `/mode`: 대화 모드 변경 (Normal, Concise, Detailed, Code, Planning)
+- `/save`: 현재 세션을 JSON 파일로 저장
+- `/analyze`: 현재 프로젝트 구조 분석
+- `/review <file>`: 파일 코드 리뷰
+- `/doc <target>`: 문서 생성
+
+---
+
+## 💻 예시 세션
+
 ```
+  ____    ___    ____    ____   ___      ___    _    
+ |  _ \  |_ _|  / ___|  / ___| |_ _|    / _ \  / \   
+ | |_) |  | |  | |     | |      | |    | | | |/ _ \  
+ |  _ <   | |  | |___  | |___   | |    | |_| / ___ \ 
+ |_| \_\ |___|  \____|  \____| |___|    \___/_/   \_\
 
-### 작업계획서 생성
+═══════════════════════════════════════════════════════════════════════
+    AI CLI by IT신기술융합팀
+═══════════════════════════════════════════════════════════════════════
 
-```bash
-# 기본 계획서
-ricci plan "React로 Todo 앱 만들기"
+  ▸ 사용법:
+    명령어 입력        - 셸 명령어(예: ls, cargo build)를 바로 실행합니다.
+    c 또는 chat      - AI와 대화하는 '대화 모드'로 전환합니다.
+    h 또는 /help        - 도움말을 확인합니다.
+    p 또는 /summary     - 현재 대화로 작업 계획을 요약합니다.
 
-# 상세 계획서 with 일정 추정
-ricci plan "전자상거래 플랫폼 구축" --detail 4 --estimate
+  ▸ 자동완성:
+    → (오른쪽 화살표)    - 입력 중 회색으로 표시되는 명령어를 완성합니다.
+    Tab                - 가능한 명령어 목록을 확인합니다.
 
-# JSON 형식으로 출력
-ricci plan "API 서버 개발" --format json
-```
+  ▸ Version 0.1.0 | exit를 입력하여 대화를 종료합니다.
 
-### 프로젝트 분석
-
-```bash
-# 전체 분석
-ricci analyze
-
-# 특정 분석만 수행
-ricci analyze --type structure
-ricci analyze --type dependencies
-ricci analyze --type complexity
-
-# 특정 디렉토리 분석
-ricci analyze ./src
-```
-
-### 코드 리뷰
-
-```bash
-# 파일 리뷰
-ricci review main.rs
-
-# 특정 기준으로 리뷰
-ricci review src/ --criteria security
-ricci review src/ --criteria performance
-```
-
-### 문서 생성
-
-```bash
-# README 생성
-ricci doc myproject --type readme
-
-# API 문서 생성
-ricci doc api/ --type api
-
-# 아키텍처 문서
-ricci doc . --type architecture
-```
-
-## 대화형 모드 명령어
-
-대화형 모드에서 사용할 수 있는 특수 명령어:
-
-- `/clear` - 대화 컨텍스트 초기화
-- `/context` - 현재 컨텍스트 확인
-- `/save` - 현재 세션 저장
-- `/help` - 도움말 표시
-
-## 설정
-
-### API 키 관리
-
-```bash
-# API 키 설정
-ricci config set-key openai "sk-..."
-ricci config set-key anthropic "sk-ant-..."
-ricci config set-key gemini "AIza..."
-
-# 설정 확인
-ricci config show
-
-# 설정 초기화
-ricci config reset
-```
-
-### 설정 파일
-
-설정은 `~/.config/ricci/config.toml`에 저장됩니다:
-
-```toml
-openai_api_key = "sk-..."
-anthropic_api_key = "sk-ant-..."
-gemini_api_key = "AIza..."
-
-[model_preferences]
-default_provider = "openai"
-default_model = "gpt-4-turbo-preview"
-temperature = 0.7
-max_tokens = 2000
-
-[output_preferences]
-syntax_highlighting = true
-markdown_rendering = true
-auto_save_sessions = false
-session_dir = "/home/user/.local/share/ricci/sessions"
-```
-
-## 예제
-
-### 작업계획서 생성 예제
-
-```bash
-$ ricci plan "마이크로서비스 아키텍처로 블로그 플랫폼 구축" --detail 3 --estimate
-
-# 블로그 플랫폼 구축 계획
-
-## 목표
-- 확장 가능한 마이크로서비스 아키텍처 구현
-- 사용자 인증 및 권한 관리
-- 포스트 작성/편집/삭제 기능
-- 댓글 시스템
-- 검색 기능
-
-## 단계별 계획
-
-### 1단계: 아키텍처 설계 및 환경 구성
-예상 기간: 3-5일 (평균 4일)
-
-#### 주요 작업
-- [ ] 마이크로서비스 아키텍처 설계 (보통)
-  - [ ] 서비스 경계 정의
-  - [ ] API 게이트웨이 설계
-  - [ ] 서비스 간 통신 방식 결정
+ricci> h
+주요 명령어 (단축키):
+  /chat (c, chat)    - AI와 대화하는 '대화 모드'로 전환합니다.
+  /help (h)            - 이 도움말을 표시합니다.
+  /summary (p)        - 현재 대화 내용으로 작업 계획서를 생성하고 파일로 저장합니다.
 ...
+
+ricci> c
+대화 모드로 전환합니다. 'exit' 또는 'quit'으로 나올 수 있습니다.
+ricci (chat)> 이 프로젝트의 리팩토링 계획을 세워줘.
+
+👤 You: 이 프로젝트의 리팩토링 계획을 세워줘.
+────────────────────────────────────────────────────────────────────────────────
+🤖 Ricci: Thinking...
+🤖 Ricci: 네, 프로젝트 리팩토링 계획을 세워드리겠습니다. 어떤 부분에 집중하고 싶으신가요? 예를 들어, 코드 구조 개선, 성능 최적화, 의존성 관리 등이 있습니다.
+
+ricci (chat)> exit
+명령어 모드로 돌아갑니다.
+
+ricci> p
+작업 계획서를 생성하고 저장하는 중...
+✓ 작업 계획서가 plan_20231027_103000.md 파일로 저장되었습니다.
 ```
 
-### 프로젝트 분석 예제
+---
 
-```bash
-$ ricci analyze
+## 🤝 기여하기
 
-프로젝트 구조 분석
-==================================================
-총 파일 수: 42
-총 코드 라인: 3,847
+프로젝트에 기여하고 싶으시다면 언제든 환영합니다! `Pull Request`를 열어주시거나 `Issue`를 등록해주세요.
 
-언어별 통계:
-  Rust - 35 파일, 3,215 라인 (83.6%)
-  TOML - 3 파일, 256 라인 (6.7%)
-  Markdown - 4 파일, 376 라인 (9.8%)
+## 📄 라이선스
 
-주요 디렉토리:
-  📁 src/ (35 파일) - 소스 코드
-  📁 src/api/ (5 파일) - API 코드
-  📁 src/assistant/ (8 파일) - 어시스턴트 로직
-...
-```
-
-## 기여하기
-
-프로젝트에 기여하고 싶으시다면:
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 라이선스
-
-MIT License - 자세한 내용은 [LICENSE](LICENSE) 파일을 참조하세요.
-
-## 문의
-
-- Issue Tracker: [GitHub Issues](https://github.com/yourusername/ricci-cli/issues)
-- Email: your.email@example.com
+이 프로젝트는 MIT 라이선스를 따릅니다.

@@ -2,7 +2,8 @@ use clap::{Parser, Subcommand, CommandFactory};
 use clap_complete::{generate, Generator, Shell};
 use colored::*;
 use anyhow::{Result, Context};
-use std::io::{self, Write};
+use std::io::{self, Write, BufReader, BufRead};
+use std::process::{Command, Stdio};
 use ricci_cli::{
     assistant::DevAssistant,
     planner::ProjectPlanner,
@@ -11,7 +12,7 @@ use ricci_cli::{
     splash::{display_splash},
 };
 use rustyline::error::ReadlineError;
-use rustyline::{Editor, CompletionType, Config as RustyConfig, EditMode};
+use rustyline::{Editor, CompletionType, Config as RustyConfig, EditMode, Cmd, EventHandler, KeyCode, KeyEvent, Modifiers};
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
 use rustyline::hint::{Hinter, HistoryHinter};
@@ -203,7 +204,7 @@ async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config) ->
                 commands: vec![
                     "/clear", "/context", "/save", "/help", "/plan", 
                     "/analyze", "/review", "/doc", "/new", "/cls", 
-                    "/mode", "/summary", "/export", "/chat",
+                    "/mode", "/summary", "/chat",
                 ].into_iter().map(String::from).collect(),
             }
         }
@@ -291,8 +292,18 @@ async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config) ->
     let helper = RicciHelper::new();
     let mut rl = Editor::with_config(rusty_config)?;
     rl.set_helper(Some(helper));
-    // NOTE: 모든 커스텀 키 바인딩 제거하여 rustyline 기본값 사용
-    // 기본적으로 Tab=완성 목록, RightArrow=힌트 완성을 지원함
+    rl.bind_sequence( // Tab 키는 힌트 완성
+        KeyEvent::from('\t'),
+        EventHandler::Simple(Cmd::CompleteHint),
+    );
+    rl.bind_sequence( // 오른쪽 화살표도 힌트 완성
+        KeyEvent(KeyCode::Right, Modifiers::NONE),
+        EventHandler::Simple(Cmd::CompleteHint),
+    );
+    rl.bind_sequence( // Ctrl+I는 목록 표시
+        KeyEvent(KeyCode::Char('i'), Modifiers::CTRL),
+        EventHandler::Simple(Cmd::Complete),
+    );
     
     // 히스토리 파일 로드
     let history_path = dirs::data_dir()
@@ -333,28 +344,54 @@ async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config) ->
 
                 match mode {
                     AppMode::Command => {
-                        if input == "chat" || input == "/chat" {
-                            mode = AppMode::Chat;
-                            println!("{}", "대화 모드로 전환합니다. 'exit'로 종료할 수 있습니다.".green());
-                            continue;
-                        }
-                        if input.starts_with('/') {
-                            handle_special_command(input, &mut assistant).await?;
-                            continue;
-                        }
-                        
-                        // Execute as shell command
-                        println!("{} {}", "❯ Executing:".dimmed(), input);
-                        let output = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" })
-                            .arg(if cfg!(windows) { "/C" } else { "-c" })
-                            .arg(input)
-                            .output()?;
+                        // 단축키 및 명령어 처리
+                        match input {
+                            "c" | "chat" | "/chat" => {
+                                mode = AppMode::Chat;
+                                println!("{}", "대화 모드로 전환합니다. 'exit' 또는 'quit'으로 나올 수 있습니다.".green());
+                                continue;
+                            }
+                            "h" | "/help" => {
+                                print_special_commands();
+                                continue;
+                            }
+                            "p" | "/summary" => {
+                                handle_special_command("/summary", &mut assistant).await?;
+                                continue;
+                            }
+                            cmd if cmd.starts_with('/') => {
+                                handle_special_command(cmd, &mut assistant).await?;
+                                continue;
+                            }
+                            _ => { // 셸 명령어 실행
+                                println!("{} {}", "❯ Executing:".dimmed(), input);
+                                let mut command = if cfg!(target_os = "windows") {
+                                    let mut com = Command::new("cmd");
+                                    com.arg("/C").arg(input);
+                                    com
+                                } else {
+                                    let mut com = Command::new("sh");
+                                    com.arg("-c").arg(input);
+                                    com
+                                };
 
-                        if !output.stdout.is_empty() {
-                            print!("{}", String::from_utf8_lossy(&output.stdout));
-                        }
-                        if !output.stderr.is_empty() {
-                            eprint!("{}", String::from_utf8_lossy(&output.stderr).red());
+                                let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+                                
+                                if let Some(stdout) = child.stdout.take() {
+                                    let reader = BufReader::new(stdout);
+                                    for line in reader.lines() {
+                                        println!("{}", line?);
+                                    }
+                                }
+                                if let Some(stderr) = child.stderr.take() {
+                                    let reader = BufReader::new(stderr);
+                                    for line in reader.lines() {
+                                        eprintln!("{}", line?.yellow());
+                                    }
+                                }
+
+                                child.wait()?;
+                            }
                         }
                     }
                     AppMode::Chat => {
@@ -441,26 +478,12 @@ async fn handle_special_command(command: &str, assistant: &mut DevAssistant) -> 
             let review = assistant.review_code(path, "all").await?;
             println!("\n{}", review.format_markdown());
         }
-        cmd if cmd.starts_with("/doc ") => {
-            let parts: Vec<&str> = cmd.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let target = parts[1];
-                let doc_type = parts.get(2).unwrap_or(&"readme");
-                println!("{} {} 문서 생성 중...", doc_type.cyan(), target);
-                let doc = assistant.generate_documentation(target, doc_type).await?;
-                println!("\n{}", doc);
-            }
-        }
-        "/mode" => {
-            let current_mode = assistant.get_chat_mode();
-            println!("{}", "대화 모드 선택:".bright_blue());
-            println!("  1. {} - 일반 대화", "Normal".cyan());
-            println!("  2. {} - 간결한 응답", "Concise".cyan());
-            println!("  3. {} - 상세한 응답", "Detailed".cyan());
-            println!("  4. {} - 코드 중심", "Code".cyan());
-            println!("  5. {} - 계획 수립", "Planning".cyan());
-            println!("\n현재 모드: {:?}", current_mode);
-            println!("모드를 변경하려면 /mode <1-5> 를 입력하세요.");
+        "/summary" => {
+            println!("{}", "작업 계획서를 생성하고 저장하는 중...".yellow());
+            let plan = assistant.export_as_plan("markdown").await?;
+            let filename = format!("plan_{}.md", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+            std::fs::write(&filename, &plan)?;
+            println!("{} 작업 계획서가 {} 파일로 저장되었습니다.", "✓".green(), filename.cyan());
         }
         cmd if cmd.starts_with("/mode ") => {
             use ricci_cli::assistant::ChatMode;
@@ -479,18 +502,15 @@ async fn handle_special_command(command: &str, assistant: &mut DevAssistant) -> 
             assistant.set_chat_mode(mode);
             println!("{} 모드가 {:?}로 변경되었습니다.", "✓".green(), mode);
         }
-        "/summary" => {
-            println!("{}", "대화 내용을 요약하는 중...".yellow());
-            let summary = assistant.summarize_conversation().await?;
-            println!("\n{}", "📋 대화 요약:".bright_blue().bold());
-            println!("{}", summary);
-        }
-        "/export" => {
-            println!("{}", "작업계획서로 내보내는 중...".yellow());
-            let plan = assistant.export_as_plan("markdown").await?;
-            let filename = format!("plan_{}.md", chrono::Local::now().format("%Y%m%d_%H%M%S"));
-            std::fs::write(&filename, &plan)?;
-            println!("{} 작업계획서가 {}에 저장되었습니다.", "✓".green(), filename.cyan());
+        cmd if cmd.starts_with("/doc ") => {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let target = parts[1];
+                let doc_type = parts.get(2).unwrap_or(&"readme");
+                println!("{} {} 문서 생성 중...", doc_type.cyan(), target);
+                let doc = assistant.generate_documentation(target, doc_type).await?;
+                println!("\n{}", doc);
+            }
         }
         _ => {
             println!("{}", "알 수 없는 명령어입니다. /help를 입력하세요.".red());
@@ -500,25 +520,25 @@ async fn handle_special_command(command: &str, assistant: &mut DevAssistant) -> 
 }
 
 fn print_special_commands() {
-    println!("{}", "\n특수 명령어:".bright_blue().bold());
-    println!("  {} - 화면 지우기", "/cls".cyan());
-    println!("  {} - 새 대화 시작 (화면 지우기 + 컨텍스트 초기화)", "/new".cyan());
-    println!("  {} - 컨텍스트만 초기화", "/clear".cyan());
-    println!("  {} - 현재 컨텍스트 보기", "/context".cyan());
-    println!("  {} - 세션 저장", "/save".cyan());
-    println!("  {} [1-5] - 대화 모드 변경", "/mode".cyan());
-    println!("  {} - 대화 내용 요약", "/summary".cyan());
-    println!("  {} - 작업계획서로 내보내기", "/export".cyan());
-    println!("  {} - 작업계획서 템플릿", "/plan".cyan());
-    println!("  {} - 프로젝트 분석", "/analyze".cyan());
-    println!("  {} <path> - 코드 리뷰", "/review".cyan());
-    println!("  {} <target> [type] - 문서 생성", "/doc".cyan());
-    println!("  {} - 도움말\n", "/help".cyan());
-    
-    println!("{}", "자동완성:".bright_green().bold());
-    println!("  {} - 명령어, 파일명 자동완성", "Tab".bright_yellow());
-    println!("  {} + {} - 히스토리 검색", "Ctrl".bright_yellow(), "R".bright_yellow());
-    println!("  {} + {} - 줄 지우기\n", "Ctrl".bright_yellow(), "U".bright_yellow());
+    println!("{}", "\n주요 명령어 (단축키):".bright_blue().bold());
+    println!("  {} ({}, {})    - AI와 대화하는 '대화 모드'로 전환합니다.", "/chat".cyan(), "c".green(), "chat".green());
+    println!("  {} ({})            - 이 도움말을 표시합니다.", "/help".cyan(), "h".green());
+    println!("  {} ({})        - 현재 대화 내용으로 작업 계획서를 생성하고 파일로 저장합니다.", "/summary".cyan(), "p".green());
+
+    println!("{}", "\n자동완성:".bright_green().bold());
+    println!("  {} 또는 {}    - 입력 중 회색으로 표시되는 명령어를 완성합니다.", "Tab".bright_yellow(), "→".bright_yellow());
+    println!("  {}         - 가능한 명령어 목록을 확인합니다.", "Ctrl+I".bright_yellow());
+
+    println!("{}", "\n모든 특수 명령어:".bright_blue().bold());
+    println!("  {}       - 새 대화 시작 (컨텍스트 초기화)", "/new, /clear".cyan());
+    println!("  {}           - 화면을 지웁니다.", "/cls".cyan());
+    println!("  {}         - 현재 대화 모드를 확인하고 변경합니다.", "/mode".cyan());
+    println!("  {}       - 현재 세션을 파일로 저장합니다.", "/save".cyan());
+    println!("  {}     - 현재 프로젝트 구조를 분석합니다.", "/analyze".cyan());
+    println!("  {} <file>   - 지정된 파일의 코드를 리뷰합니다.", "/review".cyan());
+    println!("  {} <target> - 지정된 대상에 대한 문서를 생성합니다.", "/doc".cyan());
+    println!("  {}   - 대화 내용 기반으로 작업계획서를 생성합니다.", "/plan".cyan());
+    println!("  {}         - 현재 대화의 컨텍스트 정보를 봅니다.", "/context".cyan());
 }
 
 fn get_plan_templates() -> String {
