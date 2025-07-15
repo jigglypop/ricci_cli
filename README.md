@@ -2,10 +2,9 @@
 > AI CLI by IT신기술융합팀
 
 Ricci CLI는 셸 명령어 실행과 AI와의 대화를 하나의 인터페이스에서 결합한 차세대 개발 어시스턴트입니다.
-일상적인 개발 작업을 방해하지 않으면서, 필요할 때 언제든 강력한 AI의 지원을 받을 수 있도록 설계되었습니다.
+일상적인 개발 작업을 방해하지 않으면서, 필요할 때 언제든 강력한 AI의 지원을 받을 수 있도록 설계하였습니다.
 
-![Ricci CLI Demo](https://user-images.githubusercontent.com/12345/67890.gif) 
-*(실제 데모 GIF를 여기에 추가하세요)*
+![Ricci CLI Demo](https://github.com/jigglypop/ricci_cli/blob/main/public/main.png?raw=true) 
 
 ---
 
@@ -155,12 +154,3 @@ ricci> p
 ✓ 작업 계획서가 plan_20231027_103000.md 파일로 저장되었습니다.
 ```
 
----
-
-## 🤝 기여하기
-
-프로젝트에 기여하고 싶으시다면 언제든 환영합니다! `Pull Request`를 열어주시거나 `Issue`를 등록해주세요.
-
-## 📄 라이선스
-
-이 프로젝트는 MIT 라이선스를 따릅니다.

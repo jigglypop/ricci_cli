@@ -19,12 +19,9 @@ pub struct OpenAIClient {
 impl OpenAIClient {
     pub fn new(config: &Config) -> Result<Self> {
         let api_key = config.get_active_api_key()?;
-        
         let openai_config = OpenAIConfig::new()
             .with_api_key(api_key);
-        
         let client = Client::with_config(openai_config);
-        
         Ok(Self {
             client,
             model: config.model_preferences.default_model.clone(),
