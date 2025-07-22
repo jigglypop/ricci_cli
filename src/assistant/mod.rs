@@ -1,10 +1,20 @@
+mod types;
+mod file_modifier;
+mod review;
+
+pub use types::*;
+pub use file_modifier::{FileModifier, FileChange, SafeFileModifier};
+pub use review::review_code;
+
 use anyhow::{Result, Context};
 use crate::config::Config;
 use crate::api::OpenAIClient;
 use crate::renderer::MarkdownRenderer;
-use serde::{Serialize, Deserialize};
 use std::path::Path;
 use colored::*;
+use chrono::Utc;
+use rustyline::Editor;
+use rustyline::error::ReadlineError;
 
 pub struct DevAssistant {
     client: OpenAIClient,
@@ -12,74 +22,6 @@ pub struct DevAssistant {
     context: AssistantContext,
     config: Config,
     chat_mode: ChatMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ChatMode {
-    Normal,     // 일반 대화
-    Concise,    // 간결한 응답
-    Detailed,   // 상세한 응답
-    Code,       // 코드 중심
-    Planning,   // 계획 수립 모드
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AssistantContext {
-    messages: Vec<Message>,
-    project_info: Option<ProjectInfo>,
-    current_files: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ProjectInfo {
-    name: String,
-    language: String,
-    framework: Option<String>,
-    dependencies: Vec<String>,
-    structure: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CodeReview {
-    pub overall_score: f32,
-    pub issues: Vec<ReviewIssue>,
-    pub suggestions: Vec<String>,
-    pub positive_aspects: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ReviewIssue {
-    pub severity: IssueSeverity,
-    pub category: IssueCategory,
-    pub location: String,
-    pub description: String,
-    pub suggestion: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum IssueSeverity {
-    Critical,
-    High,
-    Medium,
-    Low,
-    Info,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum IssueCategory {
-    Security,
-    Performance,
-    Style,
-    BestPractice,
-    Bug,
-    Documentation,
 }
 
 impl DevAssistant {
@@ -90,132 +32,286 @@ impl DevAssistant {
         Ok(Self {
             client,
             renderer,
-            context: AssistantContext {
-                messages: Vec::new(),
-                project_info: None,
-                current_files: Vec::new(),
-            },
+            context: AssistantContext::default(),
             config,
             chat_mode: ChatMode::Normal,
         })
-    }
-    
-    pub fn set_chat_mode(&mut self, mode: ChatMode) {
-        self.chat_mode = mode;
-    }
-    
-    pub fn get_chat_mode(&self) -> ChatMode {
-        self.chat_mode
-    }
-    
-    pub async fn summarize_conversation(&self) -> Result<String> {
-        if self.context.messages.is_empty() {
-            return Ok("대화 내용이 없습니다.".to_string());
-        }
-        
-        let conversation = self.context.messages.iter()
-            .map(|msg| format!("{}: {}", msg.role, msg.content))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        
-        let prompt = format!(
-            "다음 대화 내용을 요약하고 작업계획서로 정리해주세요:\n\n{}\n\n\
-            다음 형식으로 작성해주세요:\n\
-            1. 논의된 주요 작업\n\
-            2. 구현 우선순위\n\
-            3. 기술적 고려사항\n\
-            4. 예상 일정",
-            conversation
-        );
-        
-        self.client.query(&prompt).await
-    }
-    
-    pub async fn export_as_plan(&self, format: &str) -> Result<String> {
-        let summary = self.summarize_conversation().await?;
-        
-        match format {
-            "markdown" => Ok(format!("# 작업계획서\n\n{}", summary)),
-            "json" => {
-                let plan = serde_json::json!({
-                    "title": "대화 기반 작업계획서",
-                    "created_at": chrono::Utc::now().to_rfc3339(),
-                    "content": summary,
-                    "message_count": self.context.messages.len(),
-                });
-                Ok(serde_json::to_string_pretty(&plan)?)
-            }
-            _ => Ok(summary),
-        }
     }
     
     pub fn get_config(&self) -> &Config {
         &self.config
     }
     
-    pub async fn stream_response(&mut self, query: &str) -> Result<()> {
-        use colored::*;
-        use std::io::Write;
+    pub fn set_mode(&mut self, mode: ChatMode) {
+        self.chat_mode = mode;
+    }
+    
+    pub fn get_mode(&self) -> ChatMode {
+        self.chat_mode
+    }
+    
+    pub fn add_context_file(&mut self, file_path: &str) -> Result<()> {
+        if !self.context.current_files.contains(&file_path.to_string()) {
+            self.context.current_files.push(file_path.to_string());
+        }
+        Ok(())
+    }
+    
+    pub fn clear_context(&mut self) {
+        self.context.messages.clear();
+        self.context.current_files.clear();
+    }
+    
+    pub async fn generate_documentation(&self, target: &str, doc_type: &str) -> Result<String> {
+        let prompt = self.build_doc_prompt(target, doc_type)?;
+        self.client.query(&prompt).await
+    }
+    
+    fn build_doc_prompt(&self, target: &str, doc_type: &str) -> Result<String> {
+        let content = if Path::new(target).exists() {
+            std::fs::read_to_string(target)?
+        } else {
+            target.to_string()
+        };
         
-        // 사용자 입력 표시
-        println!("\n{} {}", "나 :".bright_cyan().bold(), query.white());
-        println!("{}", "─".repeat(80).bright_black());
+        let prompt = match doc_type {
+            "api" => format!(
+                "다음 코드에 대한 API 문서를 작성해주세요:\n\n{}\n\n\
+                각 public 함수/메서드에 대해 설명, 매개변수, 반환값, 예제를 포함해주세요.",
+                content
+            ),
+            "readme" => format!(
+                "다음 프로젝트/코드에 대한 README.md를 작성해주세요:\n\n{}\n\n\
+                프로젝트 설명, 설치 방법, 사용법, 예제를 포함해주세요.",
+                content
+            ),
+            "tutorial" => format!(
+                "다음 코드를 사용하는 방법에 대한 튜토리얼을 작성해주세요:\n\n{}\n\n\
+                단계별 설명과 실제 사용 예제를 포함해주세요.",
+                content
+            ),
+            _ => format!("다음에 대한 {} 문서를 작성해주세요:\n\n{}", doc_type, content),
+        };
         
-        // 사용자 메시지 추가
-        self.add_message("user", query);
+        Ok(prompt)
+    }
+    
+    pub async fn chat_interactive(&mut self) -> Result<()> {
+        println!("{}", "대화형 모드를 시작합니다. 'exit'를 입력하면 종료됩니다.".bright_cyan());
+        println!("{}", "명령어: /clear, /mode [normal|concise|detailed|code], /save [파일명]".dimmed());
         
-        // 시스템 프롬프트 생성
-        let system_prompt = self.create_system_prompt();
+        let mut rl = Editor::<(), rustyline::history::DefaultHistory>::new()?;
+        let history_path = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("ricci")
+            .join("history.txt");
         
-        // AI 응답 시작 표시
-        println!("{} {}", "Ricci 봇:".bright_green().bold(), "Thinking...".dimmed());
-        print!("\r{} ", "Ricci: 봇".bright_green().bold());
-        std::io::stdout().flush()?;
+        let _ = rl.load_history(&history_path);
         
-        // 스트리밍 응답 받기
-        let mut stream = self.client.stream_chat(&system_prompt, &self.context.messages).await?;
-        
-        let mut response = String::new();
-        let mut buffer = String::new();
-        let mut first_chunk = true;
-        
-        // 스트리밍 출력
-        while let Some(chunk) = stream.recv().await {
-            match chunk {
-                Ok(content) => {
-                    if first_chunk {
-                        // "Thinking..." 텍스트를 지우고 시작
-                        print!("\r{} ", "Ricci 봇:".bright_green().bold());
-                        first_chunk = false;
+        loop {
+            let prompt = format!("{} ", "You:".green().bold());
+            
+            match rl.readline(&prompt) {
+                Ok(input) => {
+                    let input = input.trim();
+                    
+                    if input.is_empty() {
+                        continue;
                     }
                     
-                    buffer.push_str(&content);
-                    response.push_str(&content);
+                    let _ = rl.add_history_entry(input);
                     
-                    // 마크다운 블록이 완성되면 렌더링
-                    if self.should_render(&buffer) {
-                        self.renderer.render_chunk(&buffer)?;
-                        buffer.clear();
+                    if input == "exit" {
+                        break;
                     }
+                    
+                    if let Some(command) = input.strip_prefix('/') {
+                        self.handle_command(command)?;
+                        continue;
+                    }
+                    
+                    self.add_message("user", input);
+                    
+                    println!("\n{} ", "Assistant:".blue().bold());
+                    
+                    let system_prompt = self.get_system_prompt();
+                    let mut stream = self.client.stream_chat(&system_prompt, &self.context.messages).await?;
+                    
+                    let mut response = String::new();
+                    while let Some(chunk) = stream.recv().await {
+                        match chunk {
+                            Ok(text) => {
+                                response.push_str(&text);
+                                self.renderer.render_chunk(&text)?;
+                            }
+                            Err(e) => {
+                                eprintln!("\n{}: {}", "스트림 오류".red(), e);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    println!("\n");
+                    self.add_message("assistant", &response);
                 }
-                Err(e) => {
-                    eprintln!("\n스트리밍 오류: {}", e);
+                Err(ReadlineError::Interrupted) => {
+                    println!("\n{}", "중단됨. 계속하려면 Enter를 누르세요.".yellow());
+                    continue;
+                }
+                Err(ReadlineError::Eof) => {
+                    println!("\n{}", "종료합니다.".yellow());
+                    break;
+                }
+                Err(err) => {
+                    eprintln!("{}: {:?}", "입력 오류".red(), err);
                     break;
                 }
             }
         }
         
-        // 남은 버퍼 렌더링
-        if !buffer.is_empty() {
-            self.renderer.render_chunk(&buffer)?;
+        let _ = rl.save_history(&history_path);
+        Ok(())
+    }
+    
+    fn handle_command(&mut self, command: &str) -> Result<()> {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        
+        match parts.get(0).map(|s| *s) {
+            Some("clear") => {
+                self.clear_context();
+                println!("{}", "대화 기록이 삭제되었습니다.".green());
+            }
+            Some("mode") => {
+                if let Some(mode_str) = parts.get(1) {
+                    let mode = match *mode_str {
+                        "normal" => ChatMode::Normal,
+                        "concise" => ChatMode::Concise,
+                        "detailed" => ChatMode::Detailed,
+                        "code" => ChatMode::Code,
+                        "planning" => ChatMode::Planning,
+                        _ => {
+                            println!("{}", "알 수 없는 모드입니다.".red());
+                            return Ok(());
+                        }
+                    };
+                    self.set_mode(mode);
+                    println!("{} {:?}", "모드 변경:".green(), mode);
+                } else {
+                    println!("{} {:?}", "현재 모드:".blue(), self.chat_mode);
+                }
+            }
+            Some("save") => {
+                let filename = parts.get(1).unwrap_or(&"chat_history.md");
+                self.save_conversation(filename)?;
+            }
+            _ => {
+                println!("{}", "알 수 없는 명령어입니다.".red());
+            }
         }
         
-        // 응답 끝 구분선
-        println!("\n{}", "─".repeat(80).bright_black());
+        Ok(())
+    }
+    
+    fn get_system_prompt(&self) -> String {
+        match self.chat_mode {
+            ChatMode::Normal => "You are a helpful development assistant.".to_string(),
+            ChatMode::Concise => "You are a concise assistant. Keep responses brief and to the point.".to_string(),
+            ChatMode::Detailed => "You are a detailed assistant. Provide comprehensive explanations with examples.".to_string(),
+            ChatMode::Code => "You are a code-focused assistant. Prioritize code examples and technical details.".to_string(),
+            ChatMode::Planning => "You are a project planning assistant. Focus on architecture, design, and planning.".to_string(),
+        }
+    }
+    
+    fn add_message(&mut self, role: &str, content: &str) {
+        self.context.messages.push(Message {
+            role: role.to_string(),
+            content: content.to_string(),
+            timestamp: Utc::now(),
+        });
+    }
+    
+    fn save_conversation(&self, filename: &str) -> Result<()> {
+        let mut content = String::new();
+        content.push_str(&format!("# 대화 기록\n\n"));
+        content.push_str(&format!("생성일: {}\n\n", Utc::now().format("%Y-%m-%d %H:%M:%S")));
         
-        // 어시스턴트 응답 저장
+        for msg in &self.context.messages {
+            content.push_str(&format!("## {} ({})\n\n", 
+                msg.role.to_uppercase(), 
+                msg.timestamp.format("%H:%M:%S")
+            ));
+            content.push_str(&format!("{}\n\n", msg.content));
+        }
+        
+        std::fs::write(filename, content)?;
+        println!("{} {}", "대화 내용이 저장되었습니다:".green(), filename);
+        Ok(())
+    }
+    
+    pub async fn query(&self, prompt: &str) -> Result<String> {
+        self.client.query(prompt).await
+    }
+    
+    pub async fn review_code(&self, path: &str, criteria: &str) -> Result<CodeReview> {
+        review_code(&self.client, path, criteria).await
+    }
+    
+    pub async fn apply_code_suggestions(&self, suggestions: Vec<CodeSuggestion>) -> Result<()> {
+        let modifier = FileModifier::new(false);
+        
+        let changes: Vec<FileChange> = suggestions
+            .into_iter()
+            .map(|s| FileChange {
+                path: s.file_path,
+                original_content: s.original_code,
+                new_content: s.suggested_code,
+                description: s.reason,
+            })
+            .collect();
+        
+        modifier.apply_changes(changes).await?;
+        Ok(())
+    }
+    
+    pub async fn safe_modify_files(&self, changes: Vec<FileChange>) -> Result<()> {
+        let safe_modifier = SafeFileModifier::new(false);
+        safe_modifier.modify_with_backup(changes).await
+    }
+    
+    async fn analyze_project(&self, path: &str) -> Result<ProjectInfo> {
+        let prompt = format!(
+            "다음 프로젝트 구조를 분석하고 주요 정보를 추출해주세요:\n{}\n\n\
+            JSON 형식으로 응답해주세요: {{\"name\": \"\", \"language\": \"\", \"framework\": \"\", \"dependencies\": [], \"structure\": \"\"}}",
+            path
+        );
+        
+        let response = self.client.query(&prompt).await?;
+        let info: ProjectInfo = serde_json::from_str(&response)
+            .context("프로젝트 정보 파싱 실패")?;
+        
+        Ok(info)
+    }
+    
+    pub async fn stream_response(&mut self, query: &str) -> Result<()> {
+        self.add_message("user", query);
+        let system_prompt = self.get_system_prompt();
+        let mut stream = self.client.stream_chat(&system_prompt, &self.context.messages).await?;
+        
+        let mut response = String::new();
+        while let Some(chunk) = stream.recv().await {
+            match chunk {
+                Ok(text) => {
+                    response.push_str(&text);
+                    self.renderer.render_chunk(&text)?;
+                }
+                Err(e) => {
+                    eprintln!("\n{}: {}", "스트림 오류".red(), e);
+                    break;
+                }
+            }
+        }
+        
         self.add_message("assistant", &response);
-        
         Ok(())
     }
     
@@ -225,325 +321,40 @@ impl DevAssistant {
         Ok(())
     }
     
-    pub fn clear_context(&mut self) {
-        self.context.messages.clear();
-        self.context.current_files.clear();
-    }
-    
-    pub fn get_context_summary(&self) -> String {
-        let mut summary = String::new();
-        
-        if let Some(ref info) = self.context.project_info {
-            summary.push_str(&format!("프로젝트: {} ({})\n", 
-                info.name.bright_blue(), 
-                info.language.cyan()
-            ));
-            
-            if let Some(ref framework) = info.framework {
-                summary.push_str(&format!("프레임워크: {}\n", framework.green()));
-            }
-            
-            summary.push_str(&format!("의존성: {} 개\n", info.dependencies.len()));
-        }
-        
-        summary.push_str(&format!("\n대화 기록: {} 개 메시지\n", self.context.messages.len()));
-        
-        if !self.context.current_files.is_empty() {
-            summary.push_str(&format!("\n열린 파일:\n"));
-            for file in &self.context.current_files {
-                summary.push_str(&format!("  - {}\n", file));
-            }
-        }
-        
-        summary
-    }
-    
     pub fn save_session(&self, path: &str) -> Result<()> {
         let content = serde_json::to_string_pretty(&self.context)?;
         std::fs::write(path, content)?;
         Ok(())
     }
     
-    pub async fn review_code(&self, path: &str, criteria: &str) -> Result<CodeReview> {
-        let code = std::fs::read_to_string(path)
-            .context("코드 파일 읽기 실패")?;
-        
-        let prompt = format!(
-            "다음 코드를 {} 기준으로 리뷰해주세요:\n\n```\n{}\n```\n\n\
-            JSON 형식으로 응답해주세요.",
-            criteria, code
-        );
-        
-        let response = self.client.query(&prompt).await?;
-        let review: CodeReview = serde_json::from_str(&response)
-            .context("리뷰 결과 파싱 실패")?;
-        
-        Ok(review)
-    }
-    
-    pub async fn generate_documentation(&self, target: &str, doc_type: &str) -> Result<String> {
-        let prompt = match doc_type {
-            "api" => format!("{}에 대한 API 문서를 생성해주세요.", target),
-            "guide" => format!("{}에 대한 사용 가이드를 작성해주세요.", target),
-            "readme" => format!("{}에 대한 README.md 파일을 작성해주세요.", target),
-            "architecture" => format!("{}의 아키텍처 문서를 작성해주세요.", target),
-            _ => format!("{}에 대한 문서를 작성해주세요.", target),
-        };
-        
-        self.client.query(&prompt).await
-    }
-    
-    async fn analyze_project(&self, path: &str) -> Result<ProjectInfo> {
-        let path = Path::new(path);
-        
-        // 프로젝트 이름
-        let name = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        
-        // 언어 감지
-        let (language, framework) = self.detect_language_and_framework(path).await?;
-        
-        // 의존성 추출
-        let dependencies = self.extract_dependencies(path, &language).await?;
-        
-        // 구조 분석
-        let structure = self.analyze_structure(path).await?;
-        
-        Ok(ProjectInfo {
-            name,
-            language,
-            framework,
-            dependencies,
-            structure,
-        })
-    }
-    
-    async fn detect_language_and_framework(&self, path: &Path) -> Result<(String, Option<String>)> {
-        // 파일 확장자와 설정 파일로 언어와 프레임워크 감지
-        if path.join("Cargo.toml").exists() {
-            Ok(("Rust".to_string(), None))
-        } else if path.join("package.json").exists() {
-            let content = std::fs::read_to_string(path.join("package.json"))?;
-            let framework = if content.contains("\"react\"") {
-                Some("React".to_string())
-            } else if content.contains("\"vue\"") {
-                Some("Vue".to_string())
-            } else if content.contains("\"@angular/core\"") {
-                Some("Angular".to_string())
-            } else {
-                None
-            };
-            Ok(("JavaScript/TypeScript".to_string(), framework))
-        } else if path.join("requirements.txt").exists() || path.join("pyproject.toml").exists() {
-            Ok(("Python".to_string(), None))
-        } else {
-            Ok(("Unknown".to_string(), None))
-        }
-    }
-    
-    async fn extract_dependencies(&self, path: &Path, language: &str) -> Result<Vec<String>> {
-        let mut deps = Vec::new();
-        
-        match language {
-            "Rust" => {
-                if let Ok(content) = std::fs::read_to_string(path.join("Cargo.toml")) {
-                    // 간단한 의존성 추출 (실제로는 toml 파싱이 필요)
-                    for line in content.lines() {
-                        if line.contains(" = ") && !line.starts_with('#') {
-                            if let Some(dep) = line.split(" = ").next() {
-                                deps.push(dep.trim().to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            "JavaScript/TypeScript" => {
-                if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(dependencies) = json.get("dependencies") {
-                            if let Some(obj) = dependencies.as_object() {
-                                deps.extend(obj.keys().map(|k| k.to_string()));
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        
-        Ok(deps)
-    }
-    
-    async fn analyze_structure(&self, path: &Path) -> Result<String> {
-        let mut structure = String::new();
-        self.walk_directory(path, &mut structure, 0, 3)?;
-        Ok(structure)
-    }
-    
-    fn walk_directory(&self, path: &Path, output: &mut String, depth: usize, max_depth: usize) -> Result<()> {
-        if depth > max_depth {
-            return Ok(());
-        }
-        
-        let entries = std::fs::read_dir(path)?;
-        
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            
-            // 숨김 파일과 일반적인 무시 패턴 스킵
-            if name.starts_with('.') || name == "target" || name == "node_modules" {
-                continue;
-            }
-            
-            output.push_str(&"  ".repeat(depth));
-            
-            if path.is_dir() {
-                output.push_str(&format!("📁 {}/\n", name));
-                self.walk_directory(&path, output, depth + 1, max_depth)?;
-            } else {
-                output.push_str(&format!("📄 {}\n", name));
-            }
-        }
-        
-        Ok(())
-    }
-    
-    fn create_system_prompt(&self) -> String {
-        let mut prompt = String::from(
-            "당신은 전문 개발 어시스턴트입니다. \
-            개발자들의 작업을 도와주고, 코드 리뷰, 문서 작성, 디버깅, 아키텍처 설계 등을 지원합니다.\n\n"
-        );
+    pub fn get_context_summary(&self) -> String {
+        let mut summary = String::new();
         
         if let Some(ref info) = self.context.project_info {
-            prompt.push_str(&format!(
-                "현재 작업 중인 프로젝트:\n\
-                - 이름: {}\n\
-                - 언어: {}\n",
-                info.name, info.language
-            ));
-            
+            summary.push_str(&format!("프로젝트: {} ({})\n", info.name, info.language));
             if let Some(ref framework) = info.framework {
-                prompt.push_str(&format!("- 프레임워크: {}\n", framework));
+                summary.push_str(&format!("프레임워크: {}\n", framework));
             }
-            
-            prompt.push_str("\n");
         }
         
-        // 대화 모드에 따른 가이드라인 설정
-        let guidelines = match self.chat_mode {
-            ChatMode::Normal => {
-                "응답 시 다음 가이드라인을 따라주세요:\n\
-                1. 짧고 간결하게 답변 (3-5문장 이내 선호)\n\
-                2. 꼭 필요한 경우에만 코드 예제 제공\n\
-                3. 장황한 설명 대신 핵심만 전달\n\
-                4. 사용자가 추가 정보를 요청하면 상세히 설명\n\
-                5. 한국어로 친절하게 설명"
-            }
-            ChatMode::Concise => {
-                "응답 시 다음 가이드라인을 따라주세요:\n\
-                1. 매우 간결하게 답변 (1-2문장)\n\
-                2. 핵심만 전달\n\
-                3. 코드는 최소한으로\n\
-                4. 한국어로 답변"
-            }
-            ChatMode::Detailed => {
-                "응답 시 다음 가이드라인을 따라주세요:\n\
-                1. 상세하고 체계적으로 설명\n\
-                2. 단계별로 구분하여 설명\n\
-                3. 예제 코드와 함께 설명\n\
-                4. 모범 사례와 주의사항 포함\n\
-                5. 한국어로 친절하게 설명"
-            }
-            ChatMode::Code => {
-                "응답 시 다음 가이드라인을 따라주세요:\n\
-                1. 코드 중심으로 답변\n\
-                2. 실행 가능한 완전한 코드 제공\n\
-                3. 주석으로 간단히 설명\n\
-                4. 코드 품질과 최적화 중시\n\
-                5. 한국어 주석 사용"
-            }
-            ChatMode::Planning => {
-                "응답 시 다음 가이드라인을 따라주세요:\n\
-                1. 체계적인 계획 수립\n\
-                2. 단계별 작업 분해\n\
-                3. 우선순위와 의존관계 명시\n\
-                4. 예상 소요시간 포함\n\
-                5. 한국어로 명확하게 작성"
-            }
-        };
-        
-        prompt.push_str(guidelines);
-        
-        prompt
+        summary.push_str(&format!("대화 기록: {} 개\n", self.context.messages.len()));
+        summary
     }
     
-    fn add_message(&mut self, role: &str, content: &str) {
-        self.context.messages.push(Message {
-            role: role.to_string(),
-            content: content.to_string(),
-            timestamp: chrono::Utc::now(),
-        });
+    pub async fn export_as_plan(&self, format: &str) -> Result<String> {
+        let mut content = String::new();
+        
+        for msg in &self.context.messages {
+            content.push_str(&format!("{}: {}\n\n", msg.role, msg.content));
+        }
+        
+        match format {
+            "markdown" => Ok(format!("# 작업 계획\n\n{}", content)),
+            _ => Ok(content),
+        }
     }
     
-    fn should_render(&self, buffer: &str) -> bool {
-        // 코드 블록이나 문단이 완성되었는지 확인
-        buffer.ends_with('\n') || 
-        buffer.ends_with("```") ||
-        buffer.ends_with(". ") ||
-        buffer.len() > 100
-    }
-}
-
-impl CodeReview {
-    pub fn format_markdown(&self) -> String {
-        let mut output = String::new();
-        
-        output.push_str(&format!("# 코드 리뷰 결과\n\n"));
-        output.push_str(&format!("**전체 점수**: {:.1}/10\n\n", self.overall_score));
-        
-        if !self.positive_aspects.is_empty() {
-            output.push_str("## 👍 긍정적인 부분\n\n");
-            for aspect in &self.positive_aspects {
-                output.push_str(&format!("- {}\n", aspect));
-            }
-            output.push_str("\n");
-        }
-        
-        if !self.issues.is_empty() {
-            output.push_str("## 🔍 발견된 이슈\n\n");
-            for issue in &self.issues {
-                let emoji = match issue.severity {
-                    IssueSeverity::Critical => "🔴",
-                    IssueSeverity::High => "🟠",
-                    IssueSeverity::Medium => "🟡",
-                    IssueSeverity::Low => "🟢",
-                    IssueSeverity::Info => "ℹ️",
-                };
-                
-                output.push_str(&format!(
-                    "### {} [{:?}] {:?} - {}\n\n",
-                    emoji, issue.severity, issue.category, issue.location
-                ));
-                output.push_str(&format!("{}\n", issue.description));
-                
-                if let Some(ref suggestion) = issue.suggestion {
-                    output.push_str(&format!("\n**제안**: {}\n", suggestion));
-                }
-                output.push_str("\n");
-            }
-        }
-        
-        if !self.suggestions.is_empty() {
-            output.push_str("## 💡 개선 제안\n\n");
-            for suggestion in &self.suggestions {
-                output.push_str(&format!("- {}\n", suggestion));
-            }
-        }
-        
-        output
+    pub fn set_chat_mode(&mut self, mode: ChatMode) {
+        self.set_mode(mode);
     }
 } 
