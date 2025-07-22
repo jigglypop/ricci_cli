@@ -13,9 +13,12 @@ pub use completion::install_completions;
 pub use config::handle_config;
 pub use code_assistant::run_code_assistant_interactive;
 
+
+
 use anyhow::Result;
+use colored::*;
 use crate::{
-    assistant::{DevAssistant, SafeFileModifier, FileChange},
+    assistant::DevAssistant,
     config::Config,
 };
 
@@ -27,83 +30,41 @@ pub async fn handle_direct_query(query: &str, config: &Config) -> Result<()> {
     Ok(())
 }
 
+// Export functions from submodules
 pub async fn handle_code_assist(
-    file_path: &str,
-    assistant: &mut DevAssistant,
-    _config: &Config,
+    path: &str, 
+    fix: bool, 
+    test: bool, 
+    docs: bool, 
+    config: &Config
 ) -> Result<()> {
-    use colored::*;
-    use std::path::Path;
+    let mut assistant = crate::assistant::DevAssistant::new(config.clone())?;
     
-    let path = Path::new(file_path);
+    // 세션 로드
+    assistant.load_session().await.ok();
     
-    if !path.exists() {
-        println!("{} 파일을 찾을 수 없습니다: {}", "오류:".red(), file_path);
-        return Ok(());
+    if fix || test || docs {
+        // 직접 실행 모드
+        println!("{}", "🚀 코드 어시스턴트 직접 모드".bright_cyan().bold());
+        let mut options = code_assistant::CodeAssistantOptions::default();
+        options.fix_all = fix;
+        options.test = test;
+        options.docs = docs;
+        
+        if path == "." {
+            code_assistant::analyze_project_interactive(&mut assistant, &options).await?;
+        } else if std::path::Path::new(path).is_file() {
+            code_assistant::analyze_file_interactive(path, &mut assistant, &options).await?;
+        } else if std::path::Path::new(path).is_dir() {
+            code_assistant::analyze_directory_interactive(path, &mut assistant, &options).await?;
+        }
+    } else {
+        // 인터랙티브 모드
+        run_code_assistant_interactive(path, &mut assistant, config).await?;
     }
     
-    if !path.is_file() {
-        println!("{} 파일이 아닙니다: {}", "오류:".red(), file_path);
-        return Ok(());
-    }
-    
-    // 파일 읽기
-    let content = std::fs::read_to_string(path)?;
-    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    
-    println!("{} {}", "📄 파일 분석 중:".cyan(), file_path);
-    println!("{}", "=".repeat(50).dimmed());
-    
-    // 파일 정보 표시
-    println!("📊 파일 정보:");
-    println!("  • 크기: {} bytes", content.len());
-    println!("  • 줄 수: {}", content.lines().count());
-    println!("  • 확장자: {}", extension);
-    println!();
-    
-    // AI 분석 요청
-    let prompt = format!(
-        "다음 {} 파일을 분석하고 개선점을 제안해주세요:\n\n파일: {}\n\n```{}\n{}\n```\n\n다음 관점에서 분석해주세요:\n1. 코드 품질\n2. 가독성\n3. 성능\n4. 보안\n5. 모범 사례",
-        extension, file_path, extension, content
-    );
-    
-    println!("{}", "🤖 AI가 코드를 분석하고 있습니다...".yellow());
-    let analysis = assistant.query(&prompt).await?;
-    
-    println!("\n{}", "📋 분석 결과:".green().bold());
-    println!("{}", "=".repeat(50).dimmed());
-    println!("{}", analysis);
-    println!("{}", "=".repeat(50).dimmed());
-    
-    // 수정 제안 여부 확인
-    println!("\n{}", "코드를 수정하시겠습니까? (y/n)".cyan());
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    
-    if input.trim().to_lowercase() == "y" {
-        println!("{}", "🔧 수정사항을 생성하고 있습니다...".yellow());
-        
-        let fix_prompt = format!(
-            "위의 분석을 바탕으로 다음 코드를 개선해주세요. 전체 수정된 코드를 제공해주세요:\n\n```{}\n{}\n```",
-            extension, content
-        );
-        
-        let improved_code = assistant.query(&fix_prompt).await?;
-        
-        // 코드 블록 추출
-        let improved_code = extract_code_block(&improved_code, extension);
-        
-        // SafeFileModifier를 사용하여 사용자 확인 후 수정
-        let safe_modifier = SafeFileModifier::new(false);
-        let changes = vec![FileChange {
-            path: file_path.to_string(),
-            original_content: content,
-            new_content: improved_code,
-            description: "AI가 제안한 코드 개선사항".to_string(),
-        }];
-        
-        safe_modifier.modify_with_backup(changes).await?;
-    }
+    // 세션 저장
+    assistant.save_session().await.ok();
     
     Ok(())
 }

@@ -2,6 +2,7 @@ use anyhow::Result;
 use colored::*;
 use std::path::Path;
 use std::fs;
+use walkdir;
 use crate::{
     assistant::{DevAssistant, SafeFileModifier, FileChange},
     config::Config,
@@ -111,7 +112,7 @@ fn select_options() -> Result<CodeAssistantOptions> {
     Ok(options)
 }
 
-async fn analyze_file_interactive(
+pub async fn analyze_file_interactive(
     file_path: &str,
     assistant: &mut DevAssistant,
     options: &CodeAssistantOptions,
@@ -368,35 +369,377 @@ async fn generate_documentation(
     assistant.query(&prompt).await
 }
 
-async fn analyze_project_interactive(
+pub async fn analyze_project_interactive(
     assistant: &mut DevAssistant,
-    options: &CodeAssistantOptions,
+    _options: &CodeAssistantOptions,
 ) -> Result<()> {
     println!("\n{}", "🏗️ 프로젝트 전체 분석".bright_cyan().bold());
+    println!("{}", "=".repeat(50).dimmed());
     
-    // 프로젝트 구조 분석
-    let structure_analysis = assistant.query(
-        "현재 프로젝트의 구조를 분석하고 아키텍처 개선점을 제안해주세요."
-    ).await?;
+    // 현재 디렉토리의 프로젝트 구조 분석
+    let current_dir = std::env::current_dir()?;
+    println!("📁 분석 대상: {}", current_dir.display());
     
-    println!("\n{}", "📊 프로젝트 구조 분석:".green());
-    println!("{}", structure_analysis);
+    // 프로젝트 타입 감지
+    let project_type = detect_project_type(&current_dir)?;
+    println!("🔍 프로젝트 타입: {}", project_type.bright_green());
     
-    // 코드 품질 메트릭
-    if options.analyze {
-        let metrics = assistant.query(
-            "프로젝트의 전반적인 코드 품질 메트릭을 평가해주세요: \
-            복잡도, 중복도, 테스트 커버리지, 문서화 수준 등"
-        ).await?;
+    // 프로젝트 메타데이터 읽기
+    let mut project_metadata = String::new();
+    if project_type == "Rust" {
+        if let Ok(cargo_toml) = fs::read_to_string(current_dir.join("Cargo.toml")) {
+            // Cargo.toml에서 프로젝트 정보 추출
+            if let Ok(toml) = cargo_toml.parse::<toml::Value>() {
+                if let Some(package) = toml.get("package") {
+                    if let Some(name) = package.get("name").and_then(|v| v.as_str()) {
+                        project_metadata.push_str(&format!("프로젝트명: {}\n", name));
+                    }
+                    if let Some(version) = package.get("version").and_then(|v| v.as_str()) {
+                        project_metadata.push_str(&format!("버전: {}\n", version));
+                    }
+                    if let Some(desc) = package.get("description").and_then(|v| v.as_str()) {
+                        project_metadata.push_str(&format!("설명: {}\n", desc));
+                    }
+                }
+                if let Some(deps) = toml.get("dependencies") {
+                    if let Some(deps_table) = deps.as_table() {
+                        project_metadata.push_str(&format!("의존성 수: {}\n", deps_table.len()));
+                    }
+                }
+            }
+        }
+    }
+    
+    // 파일 구조 수집 및 코드 샘플
+    let mut files_info = Vec::new();
+    let mut code_samples = Vec::new();
+    let mut total_lines = 0;
+    let mut file_count = 0;
+    let mut language_stats: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    
+    for entry in walkdir::WalkDir::new(&current_dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
         
-        println!("\n{}", "📈 코드 품질 메트릭:".green());
-        println!("{}", metrics);
+        // 무시할 디렉토리
+        if should_ignore_path(path) {
+            continue;
+        }
+        
+        if path.is_file() {
+            if let Ok(content) = fs::read_to_string(path) {
+                let lines = content.lines().count();
+                total_lines += lines;
+                file_count += 1;
+                
+                let relative_path = path.strip_prefix(&current_dir)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string();
+                
+                files_info.push(format!("- {} ({} 줄)", relative_path, lines));
+                
+                // 코드 샘플 추출
+                if let Some(ext) = path.extension() {
+                    let ext_str = ext.to_str().unwrap_or("");
+                    if matches!(ext_str, "rs" | "js" | "ts" | "py" | "go" | "java") {
+                        // 언어별 통계
+                        *language_stats.entry(ext_str.to_string()).or_insert(0) += 1;
+                        
+                        // 주요 파일의 코드 샘플
+                        if code_samples.len() < 5 && lines > 50 {
+                            let preview = content.lines()
+                                .take(20)
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            code_samples.push(format!("파일: {}\n```{}\n{}\n```", 
+                                relative_path, ext_str, preview));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // 프로젝트 통계 출력
+    println!("\n📊 프로젝트 통계:");
+    if !project_metadata.is_empty() {
+        print!("{}", project_metadata);
+    }
+    println!("  • 총 파일 수: {}", file_count);
+    println!("  • 총 코드 라인: {}", total_lines.to_string().bright_yellow());
+    
+    // 언어별 통계
+    if !language_stats.is_empty() {
+        println!("\n📈 언어별 파일 수:");
+        for (lang, count) in &language_stats {
+            println!("  • {}: {} 파일", lang, count);
+        }
+    }
+    
+    // 주요 파일 목록 (상위 10개)
+    println!("\n📄 주요 파일:");
+    for (i, file) in files_info.iter().take(10).enumerate() {
+        println!("  {}. {}", i + 1, file);
+    }
+    if files_info.len() > 10 {
+        println!("  ... 외 {} 개 파일", files_info.len() - 10);
+    }
+    
+    // AI에게 프로젝트 구조 분석 요청
+    let mut project_summary = format!(
+        "=== 프로젝트 정보 ===\n{}\n프로젝트 타입: {}\n총 파일: {}\n총 코드 라인: {}\n",
+        project_metadata,
+        project_type,
+        file_count,
+        total_lines
+    );
+    
+    // 언어별 통계 추가
+    if !language_stats.is_empty() {
+        project_summary.push_str("\n언어별 파일:\n");
+        for (lang, count) in &language_stats {
+            project_summary.push_str(&format!("- {}: {} 파일\n", lang, count));
+        }
+    }
+    
+    // 디렉토리 구조 추가
+    project_summary.push_str("\n=== 디렉토리 구조 ===\n");
+    let mut dirs = std::collections::HashSet::new();
+    for entry in walkdir::WalkDir::new(&current_dir)
+        .max_depth(3)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.path().is_dir() && !should_ignore_path(entry.path()) {
+            if let Ok(rel_path) = entry.path().strip_prefix(&current_dir) {
+                if !rel_path.as_os_str().is_empty() {
+                    dirs.insert(rel_path.display().to_string());
+                }
+            }
+        }
+    }
+    for dir in dirs.iter().take(10) {
+        project_summary.push_str(&format!("- {}/\n", dir));
+    }
+    
+    // 주요 파일 정보
+    project_summary.push_str("\n=== 주요 파일 ===\n");
+    project_summary.push_str(&files_info.iter().take(15).cloned().collect::<Vec<_>>().join("\n"));
+    
+    // 코드 샘플 추가
+    if !code_samples.is_empty() {
+        project_summary.push_str("\n\n=== 코드 샘플 ===\n");
+        for sample in &code_samples {
+            project_summary.push_str(&format!("\n{}\n", sample));
+        }
+    }
+    
+    println!("\n🤖 AI가 프로젝트를 분석하고 있습니다...");
+    
+    let analysis_prompt = format!(
+        "다음 {} 프로젝트의 실제 구조와 코드를 분석하고 구체적인 개선점을 제안해주세요:\n\n{}\n\n\
+        구체적으로 다음을 분석해주세요:\n\
+        1. 현재 프로젝트 구조의 장단점\n\
+        2. 모듈 구성과 관심사 분리\n\
+        3. 코드 품질과 일관성\n\
+        4. 확장성과 유지보수성\n\
+        5. 성능 최적화 기회\n\
+        6. 보안 고려사항\n\
+        7. 테스트 커버리지\n\
+        8. 문서화 수준\n\n\
+        위 코드 샘플과 구조를 참고하여 구체적이고 실행 가능한 제안을 해주세요.",
+        project_type, project_summary
+    );
+    
+    let _analysis = assistant.stream_response(&analysis_prompt).await?;
+    
+    // 추가 분석 옵션
+    println!("\n\n추가 분석을 원하시나요?");
+    println!("1. 특정 디렉토리 심층 분석");
+    println!("2. 의존성 분석");
+    println!("3. 코드 복잡도 분석");
+    println!("4. 완료");
+    
+    use std::io::{self, Write};
+    print!("\n선택: ");
+    io::stdout().flush()?;
+    
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    
+    match input.trim() {
+        "1" => {
+            print!("분석할 디렉토리 경로: ");
+            io::stdout().flush()?;
+            let mut dir_path = String::new();
+            io::stdin().read_line(&mut dir_path)?;
+            let dir_path = dir_path.trim();
+            
+            if !dir_path.is_empty() {
+                analyze_directory_interactive(dir_path, assistant, _options).await?;
+            }
+        }
+        "2" => {
+            analyze_dependencies(&current_dir, assistant).await?;
+        }
+        "3" => {
+            analyze_code_complexity(&current_dir, assistant).await?;
+        }
+        _ => {}
     }
     
     Ok(())
 }
 
-async fn analyze_directory_interactive(
+fn detect_project_type(path: &Path) -> Result<String> {
+    if path.join("Cargo.toml").exists() {
+        Ok("Rust".to_string())
+    } else if path.join("package.json").exists() {
+        Ok("Node.js/JavaScript".to_string())
+    } else if path.join("requirements.txt").exists() || path.join("setup.py").exists() {
+        Ok("Python".to_string())
+    } else if path.join("go.mod").exists() {
+        Ok("Go".to_string())
+    } else if path.join("pom.xml").exists() {
+        Ok("Java (Maven)".to_string())
+    } else if path.join("build.gradle").exists() {
+        Ok("Java (Gradle)".to_string())
+    } else {
+        Ok("Unknown".to_string())
+    }
+}
+
+fn should_ignore_path(path: &Path) -> bool {
+    let ignore_dirs = vec![
+        ".git", "target", "node_modules", ".venv", "venv", 
+        "__pycache__", "dist", "build", ".idea", ".vscode"
+    ];
+    
+    path.components().any(|component| {
+        if let Some(name) = component.as_os_str().to_str() {
+            ignore_dirs.contains(&name)
+        } else {
+            false
+        }
+    })
+}
+
+async fn analyze_dependencies(path: &Path, assistant: &mut DevAssistant) -> Result<()> {
+    println!("\n📦 의존성 분석 중...");
+    
+    let mut deps_info = String::new();
+    
+    // Rust 프로젝트
+    if let Ok(content) = fs::read_to_string(path.join("Cargo.toml")) {
+        deps_info.push_str("Rust 의존성 (Cargo.toml):\n");
+        deps_info.push_str(&content);
+    }
+    
+    // Node.js 프로젝트
+    if let Ok(content) = fs::read_to_string(path.join("package.json")) {
+        deps_info.push_str("\nNode.js 의존성 (package.json):\n");
+        deps_info.push_str(&content);
+    }
+    
+    // Python 프로젝트
+    if let Ok(content) = fs::read_to_string(path.join("requirements.txt")) {
+        deps_info.push_str("\nPython 의존성 (requirements.txt):\n");
+        deps_info.push_str(&content);
+    }
+    
+    if !deps_info.is_empty() {
+        let prompt = format!(
+            "다음 프로젝트 의존성을 분석하고 다음을 확인해주세요:\n\
+            1. 오래된 패키지\n\
+            2. 보안 취약점이 있는 패키지\n\
+            3. 불필요한 의존성\n\
+            4. 버전 충돌 가능성\n\n{}",
+            deps_info
+        );
+        
+        assistant.stream_response(&prompt).await?;
+    } else {
+        println!("의존성 파일을 찾을 수 없습니다.");
+    }
+    
+    Ok(())
+}
+
+async fn analyze_code_complexity(path: &Path, assistant: &mut DevAssistant) -> Result<()> {
+    println!("\n🔬 코드 복잡도 분석 중...");
+    
+    let mut complex_files = Vec::new();
+    
+    for entry in walkdir::WalkDir::new(path)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let file_path = entry.path();
+        
+        if should_ignore_path(file_path) || !file_path.is_file() {
+            continue;
+        }
+        
+        if let Some(ext) = file_path.extension() {
+            let ext_str = ext.to_str().unwrap_or("");
+            if matches!(ext_str, "rs" | "js" | "ts" | "py" | "go" | "java") {
+                if let Ok(content) = fs::read_to_string(file_path) {
+                    let lines = content.lines().count();
+                    let functions = count_functions(&content, ext_str);
+                    
+                    if lines > 300 || functions > 10 {
+                        complex_files.push(format!(
+                            "{}: {} 줄, {} 함수",
+                            file_path.display(),
+                            lines,
+                            functions
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    
+    if !complex_files.is_empty() {
+        println!("\n복잡한 파일들:");
+        for file in &complex_files {
+            println!("  • {}", file);
+        }
+        
+        let prompt = format!(
+            "다음 복잡한 파일들을 리팩토링하는 방법을 제안해주세요:\n\n{}\n\n\
+            각 파일에 대해:\n\
+            1. 함수 분리 방법\n\
+            2. 모듈화 전략\n\
+            3. 코드 단순화 방안",
+            complex_files.join("\n")
+        );
+        
+        assistant.stream_response(&prompt).await?;
+    } else {
+        println!("특별히 복잡한 파일이 발견되지 않았습니다.");
+    }
+    
+    Ok(())
+}
+
+fn count_functions(content: &str, extension: &str) -> usize {
+    match extension {
+        "rs" => content.matches("fn ").count(),
+        "js" | "ts" => content.matches("function").count() + content.matches("=>").count(),
+        "py" => content.matches("def ").count(),
+        "go" => content.matches("func ").count(),
+        "java" => content.matches("public ").count() + content.matches("private ").count(),
+        _ => 0,
+    }
+}
+
+pub async fn analyze_directory_interactive(
     path: &str,
     assistant: &mut DevAssistant,
     options: &CodeAssistantOptions,

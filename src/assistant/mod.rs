@@ -216,11 +216,11 @@ impl DevAssistant {
     
     fn get_system_prompt(&self) -> String {
         match self.chat_mode {
-            ChatMode::Normal => "You are a helpful development assistant.".to_string(),
-            ChatMode::Concise => "You are a concise assistant. Keep responses brief and to the point.".to_string(),
-            ChatMode::Detailed => "You are a detailed assistant. Provide comprehensive explanations with examples.".to_string(),
-            ChatMode::Code => "You are a code-focused assistant. Prioritize code examples and technical details.".to_string(),
-            ChatMode::Planning => "You are a project planning assistant. Focus on architecture, design, and planning.".to_string(),
+            ChatMode::Normal => "당신은 도움이 되는 개발 어시스턴트입니다. 한국어로 대답해주세요.".to_string(),
+            ChatMode::Concise => "당신은 간결한 어시스턴트입니다. 핵심만 간단명료하게 답변해주세요. 한국어로 대답해주세요.".to_string(),
+            ChatMode::Detailed => "당신은 상세한 어시스턴트입니다. 예제와 함께 종합적인 설명을 제공해주세요. 한국어로 대답해주세요.".to_string(),
+            ChatMode::Code => "당신은 코드 중심 어시스턴트입니다. 코드 예제와 기술적 세부사항을 우선시해주세요. 한국어로 대답해주세요.".to_string(),
+            ChatMode::Planning => "당신은 프로젝트 계획 어시스턴트입니다. 아키텍처, 설계, 계획에 집중해주세요. 한국어로 대답해주세요.".to_string(),
         }
     }
     
