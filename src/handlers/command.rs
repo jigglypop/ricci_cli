@@ -27,7 +27,7 @@ pub async fn handle_special_command(command: &str, assistant: &mut DevAssistant)
             println!("{}\n{}", "현재 컨텍스트:".bright_blue(), context);
         }
         "/save" => {
-            assistant.save_session("session.json")?;
+            assistant.save_session().await?;
             println!("{}", "세션이 저장되었습니다.".green());
         }
         "/help" => {
@@ -69,7 +69,7 @@ pub async fn handle_special_command(command: &str, assistant: &mut DevAssistant)
                     return Ok(());
                 }
             };
-            assistant.set_chat_mode(mode);
+            assistant.set_mode(mode);
             println!("{} 모드가 {:?}로 변경되었습니다.", "✓".green(), mode);
         }
         cmd if cmd.starts_with("/doc ") => {
@@ -107,8 +107,19 @@ pub fn print_special_commands() {
     println!("  {}     - 현재 프로젝트 구조를 분석합니다.", "/analyze".cyan());
     println!("  {} <file>   - 지정된 파일의 코드를 리뷰합니다.", "/review".cyan());
     println!("  {} <target> - 지정된 대상에 대한 문서를 생성합니다.", "/doc".cyan());
-    println!("  {}   - 대화 내용 기반으로 작업계획서를 생성합니다.", "/plan".cyan());
+    println!("  {}   - 대화 내용 기반으로 작업계획서를 생성합니다.", "/plan, /summary".cyan());
     println!("  {}         - 현재 대화의 컨텍스트 정보를 봅니다.", "/context".cyan());
+    
+    println!("{}", "\n한글 명령어:".bright_blue().bold());
+    println!("  {} - 현재 폴더의 구조를 분석합니다.", "폴더 분석, 구조 분석".cyan());
+    println!("  {} - 파일을 선택하여 AI가 코드를 분석하고 개선안을 제시합니다.", "파일 분석, 코드 분석".cyan());
+    println!("  {} - 하위 폴더의 모든 코드를 분석합니다.", "하위폴더 코드분석, 전체 코드분석".cyan());
+    println!("  {} - 대화 내용을 작업계획서로 정리합니다.", "작업계획서, 계획서 작성".cyan());
+    
+    println!("{}", "\nAI와 대화:".bright_blue().bold());
+    println!("  {} - AI에게 질문하기 (예: ? Rust 배열 사용법)", "? <질문>".cyan());
+    println!("  {} - AI와 대화하기 (예: @ 코드 리팩토링 팁)", "@ <메시지>".cyan());
+    println!("  {}         - AI와 대화하는 전용 모드로 전환", "c 또는 chat".cyan());
 }
 
 fn get_plan_templates() -> String {

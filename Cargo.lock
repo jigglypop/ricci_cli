@@ -1777,6 +1777,7 @@ dependencies = [
  "dialoguer",
  "dirs",
  "dotenv",
+ "encoding_rs",
  "figlet-rs",
  "futures",
  "prettytable-rs",

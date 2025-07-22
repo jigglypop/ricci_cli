@@ -54,6 +54,7 @@ prettytable-rs = "0.10"
 
 # 비동기 런타임
 futures = "0.3"
+encoding_rs = "0.8.35"
 
 
 

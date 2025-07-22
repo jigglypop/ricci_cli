@@ -91,4 +91,24 @@ pub enum Commands {
         #[clap(value_enum)]
         shell: Option<Shell>,
     },
+    
+    /// 고급 코드 어시스턴트 - 코드 분석, 리팩토링, 최적화, 보안 검사
+    CodeAssist {
+        #[arg(
+            help = "분석할 파일 또는 디렉토리 경로 (기본값: 현재 디렉토리)",
+            default_value = "."
+        )]
+        path: String,
+        
+        #[arg(long, short, help = "자동 수정 모드 (확인 없이 변경)")]
+        fix: bool,
+        
+        #[arg(long, short = 't', help = "테스트 코드 생성")]
+        test: bool,
+        
+        #[arg(long, short = 'd', help = "문서화 생성")]
+        docs: bool,
+    },
+    
+
 } 

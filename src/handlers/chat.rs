@@ -1,6 +1,6 @@
 use anyhow::Result;
 use colored::*;
-use std::io::{BufReader, BufRead};
+
 use std::process::{Command, Stdio};
 use crate::{
     assistant::DevAssistant,
@@ -155,6 +155,10 @@ pub async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config
     
     let mut assistant = DevAssistant::new(config.clone())?;
     
+    // 이전 세션 로드 시도
+    assistant.load_session().await.ok();
+    
+    // 컨텍스트 파일 로드
     if context {
         println!("{}", "프로젝트 컨텍스트 로딩 중...".yellow());
         assistant.load_project_context(".").await?;
@@ -196,12 +200,55 @@ pub async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config
                                 super::command::handle_special_command("/summary", &mut assistant).await?;
                                 continue;
                             }
+                            // 한글 명령어 처리
+                            "폴더분석" | "폴더 분석" | "구조분석" | "구조 분석" => {
+                                println!("{}", "📁 현재 폴더 구조를 분석합니다...".green());
+                                super::handle_analyze(".", "structure", config).await?;
+                                continue;
+                            }
+                            "파일분석" | "파일 분석" | "코드분석" | "코드 분석" => {
+                                println!("{}", "📝 파일 경로를 입력하세요 (예: src/main.rs 또는 . 전체):".cyan());
+                                if let Ok(file_path) = rl.readline("파일 경로> ") {
+                                    let file_path = file_path.trim();
+                                    if !file_path.is_empty() {
+                                        super::run_code_assistant_interactive(file_path, &mut assistant, config).await?;
+                                    }
+                                }
+                                continue;
+                            }
+                            "하위폴더 코드분석" | "하위폴더 분석" | "전체 코드분석" | "전체 코드 분석" => {
+                                println!("{}", "📂 하위 폴더의 모든 코드를 분석합니다...".green());
+                                super::handle_folder_code_analysis(".", &mut assistant, config).await?;
+                                continue;
+                            }
+                            "작업계획서" | "계획서" | "작업정리" | "작업 정리" => {
+                                println!("{}", "📋 대화 내용을 작업계획서로 정리합니다...".green());
+                                super::command::handle_special_command("/summary", &mut assistant).await?;
+                                continue;
+                            }
                             cmd if cmd.starts_with('/') => {
                                 super::command::handle_special_command(cmd, &mut assistant).await?;
                                 continue;
                             }
                             _ => { // 셸 명령어 실행
-                                execute_shell_command(input)?;
+                                // 한글 명령어를 직접 처리
+                                match input {
+                                    "안녕" | "하이" | "헬로" => {
+                                        println!("안녕하세요! 무엇을 도와드릴까요? 🙂");
+                                        continue;
+                                    }
+                                    _ => {
+                                        // ?나 @로 시작하면 AI와 대화
+                                        if input.starts_with('?') || input.starts_with('@') {
+                                            let query = input.trim_start_matches(['?', '@']).trim();
+                                            if !query.is_empty() {
+                                                assistant.stream_response(query).await?;
+                                            }
+                                        } else {
+                                            execute_shell_command(input)?
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -238,41 +285,100 @@ pub async fn handle_chat(context: bool, save_path: Option<&str>, config: &Config
         let _ = rl.save_history(path);
     }
     
+    // 세션 자동 저장
+    assistant.save_session().await?;
+    
     if let Some(path) = save_path {
-        assistant.save_session(path)?;
-        println!("{} {}", "세션 저장됨:".green(), path);
+        assistant.save_conversation(path)?;
+        println!("{} {}", "대화 내용 저장됨:".green(), path);
     }
     
     Ok(())
 }
 
 fn execute_shell_command(input: &str) -> Result<()> {
-    println!("{} {}", "❯ Executing:".dimmed(), input);
+
+    
+    // 한글 명령어 처리
+    let processed_input = match input {
+        "해당 하위 폴더구조 분석좀" | "폴더 분석" | "구조 분석" => {
+            println!("{}", "📁 현재 폴더 구조를 분석합니다...".green());
+            "ricci analyze ."
+        }
+        "파일 분석" | "코드 분석" => {
+            println!("{}", "📝 코드 분석 모드로 전환합니다. 파일 경로를 입력하세요...".green());
+            return Ok(());
+        }
+        "작업계획서" | "계획서 작성" | "작업 정리" => {
+            println!("{}", "📋 대화 내용을 작업계획서로 정리합니다...".green());
+            "ricci plan \"현재 대화 내용 정리\""
+        }
+        _ => input,
+    };
+
+    println!("{} {}", "❯ Executing:".dimmed(), processed_input);
+    
+    // Windows에서는 PowerShell을 사용하여 UTF-8 처리 개선
     let mut command = if cfg!(target_os = "windows") {
-        let mut com = Command::new("cmd");
-        com.arg("/C").arg(input);
+        let mut com = Command::new("powershell");
+        com.arg("-NoProfile")
+            .arg("-Command")
+            .arg(&format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {}", processed_input));
         com
     } else {
         let mut com = Command::new("sh");
-        com.arg("-c").arg(input);
+        com.arg("-c").arg(processed_input);
         com
     };
 
-    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-    
-    if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            println!("{}", line?);
-        }
-    }
-    if let Some(stderr) = child.stderr.take() {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            eprintln!("{}", line?.yellow());
-        }
-    }
+    // 표준 입출력 설정
+    command.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
 
-    child.wait()?;
+    match command.output() {
+        Ok(output) => {
+            // stdout 출력
+            if !output.stdout.is_empty() {
+                match String::from_utf8(output.stdout.clone()) {
+                    Ok(text) => print!("{}", text),
+                    Err(_) => {
+                        // UTF-8 실패 시 Windows 기본 인코딩 시도
+                        if cfg!(target_os = "windows") {
+                            // CP949 (Korean Windows) 디코딩 시도
+                            let (text, _, _) = encoding_rs::EUC_KR.decode(&output.stdout);
+                            print!("{}", text);
+                        } else {
+                            println!("{}", "출력을 디코딩할 수 없습니다".yellow());
+                        }
+                    }
+                }
+            }
+            
+            // stderr 출력
+            if !output.stderr.is_empty() {
+                match String::from_utf8(output.stderr.clone()) {
+                    Ok(text) => eprint!("{}", text.yellow()),
+                    Err(_) => {
+                        if cfg!(target_os = "windows") {
+                            let (text, _, _) = encoding_rs::EUC_KR.decode(&output.stderr);
+                            eprint!("{}", text.yellow());
+                        }
+                    }
+                }
+            }
+            
+            // 종료 코드 확인
+            if !output.status.success() {
+                if let Some(code) = output.status.code() {
+                    eprintln!("{} {}", "명령어 실행 실패. 종료 코드:".red(), code);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("{} {}", "명령어 실행 오류:".red(), e);
+        }
+    }
+    
     Ok(())
 } 
